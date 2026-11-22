@@ -62,6 +62,11 @@ export function createAudio() {
     horn() {
       tone(440, 0.18, 'square', 0.035);
     },
+    shot(kind) {
+      if (kind === 'rifle') tone(140, 0.05, 'square', 0.03);
+      else if (kind === 'fist') tone(90, 0.06, 'triangle', 0.02);
+      else tone(320, 0.06, 'square', 0.028);
+    },
     buy() {
       tone(660, 0.08, 'triangle', 0.03);
     },

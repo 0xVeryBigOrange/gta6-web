@@ -1,20 +1,4 @@
-/** City grid and gameplay constants. All original / procedural. */
-
-export const CELL = 48;
-export const ROAD_W = 16;
-export const LINES = 6;
-export const ORIGIN = -((LINES - 1) / 2) * CELL;
-export const BLOCK_HALF = (CELL - ROAD_W) / 2;
-export const BUILD_LIMIT = BLOCK_HALF * 0.68;
-
-export const WORLD = {
-  minX: -148,
-  maxX: 148,
-  minZ: -148,
-  maxZ: 176,
-  beachZ: 132,
-  waterZ: 188,
-};
+/** Vice Chain districts, economy, and missions. Coordinates are meters. */
 
 export const COINS = [
   { id: 'BTC', name: '比特币', tick: 'BTC', dec: 4, priceDec: 0, color: '#f2a900' },
@@ -37,46 +21,24 @@ export const STARTING = {
   bal: { BTC: 0.012, ETH: 0.25, SOL: 3, DOGE: 800, ORNG: 1200 },
 };
 
-export const CARS = [
-  {
-    id: 'runner',
-    name: '橙行者',
-    blurb: '起步赠送的海滩通勤车',
-    price: 0,
-    max: 24,
-    accel: 20,
-    grip: 1,
-    color: 0xff8a1e,
-    x: 8,
-    z: 34,
-    yaw: Math.PI,
-  },
-  {
-    id: 'suv',
-    name: '链上越野',
-    blurb: '稳、宽、适合甩掉监管',
-    price: 8000,
-    max: 28,
-    accel: 17,
-    grip: 1.15,
-    color: 0x20e0c0,
-    x: -58,
-    z: 34,
-    yaw: 0,
-  },
-  {
-    id: 'sport',
-    name: '落日超跑',
-    blurb: '霓虹粉，拉盘专用',
-    price: 18000,
-    max: 36,
-    accel: 28,
-    grip: 0.92,
-    color: 0xff2d95,
-    x: -44,
-    z: 34,
-    yaw: 0,
-  },
+export const WORLD = {
+  minX: -600,
+  maxX: 580,
+  minZ: -540,
+  maxZ: 560,
+};
+
+export const VEHICLES = [
+  { id: 'sedan', name: '街车', blurb: '起步就停在路边的轿车', price: 0, kind: 'car', file: 'sedan', max: 28, accel: 16, grip: 1.05, seat: 0.15 },
+  { id: 'suv', name: '链上越野', blurb: '高车身，甩监管更稳', price: 8000, kind: 'car', file: 'suv', max: 30, accel: 14, grip: 1.28, seat: 0.28 },
+  { id: 'sport', name: '落日掀背', blurb: '直道凶，弯里要收油', price: 16000, kind: 'car', file: 'hatchback-sports', max: 40, accel: 24, grip: 0.88, seat: 0.12 },
+  { id: 'taxi', name: '夜班出租', blurb: '市区巡游，转向老实', price: 4500, kind: 'car', file: 'taxi', max: 29, accel: 15, grip: 1, seat: 0.15 },
+  { id: 'race', name: '赛道橙', blurb: '油门很冲，抓地一般', price: 24000, kind: 'car', file: 'race', max: 46, accel: 30, grip: 0.8, seat: 0.08 },
+  { id: 'police', name: 'SEC 巡逻车', blurb: '征用来的，车行不卖', price: 0, kind: 'car', file: 'police', max: 36, accel: 22, grip: 1.1, seat: 0.15, unsold: true },
+  { id: 'bike', name: '链轮摩托', blurb: '窄、快、会侧倾', price: 5000, kind: 'bike', max: 38, accel: 28, grip: 0.7, seat: 0.42 },
+  { id: 'boat', name: '海岸快艇', blurb: '离开水面就几乎爬不动', price: 12000, kind: 'boat', file: 'boat-speed-a', max: 30, accel: 12, grip: 0.55, seat: 0.55 },
+  { id: 'heli', name: '橙翼直升机', blurb: '能悬停。Shift 上升，Ctrl 下降', price: 42000, kind: 'heli', max: 34, accel: 8, grip: 1, seat: 0.35 },
+  { id: 'plane', name: '落日轻航', blurb: '到机场跑道拉满油门再抬头', price: 56000, kind: 'plane', max: 64, accel: 10, grip: 1, seat: 0.45 },
 ];
 
 export const PROPS = [
@@ -85,41 +47,62 @@ export const PROPS = [
     name: '海滩公寓',
     blurb: '正对日落。拥有后通缉消退更快。',
     price: 6000,
-    x: 52,
-    z: 156,
+    x: 120,
+    z: 214,
   },
   {
     id: 'pent',
     name: '霓虹阁楼',
     blurb: '市中心天际线，纯炫耀资产。',
     price: 26000,
-    x: -48,
-    z: -24,
+    x: 20,
+    z: -58,
   },
 ];
 
 export const SPOTS = {
-  spawn: { x: 30, z: 30 },
-  exchange: { x: 0, z: 18, r: 4.2, name: '橙子交易所' },
-  kiosk: { x: 24, z: 46, r: 3.6, name: '任务终端' },
-  dealer: { x: -48, z: 26, r: 4.4, name: '车行' },
-  safehouse: { x: 42, z: 24, r: 4.2, name: '橙子安全屋' },
-  coldPickup: { x: -72, z: -100, r: 3.4 },
-  coldDrop: { x: 52, z: 156, r: 4.2 },
-  pump: { x: 108, z: 164, r: 4.2 },
-  rug: { x: 72, z: 48, r: 3.6 },
+  spawn: { x: 0, z: 22 },
+  exchange: { x: 0, z: 58, r: 5.2, name: '橙子交易所' },
+  kiosk: { x: 58, z: 0, r: 4.4, name: '任务终端' },
+  dealer: { x: -58, z: 58, r: 5.5, name: '车行' },
+  safehouse: { x: 0, z: -58, r: 5, name: '橙子安全屋' },
+  hospital: { x: 0, z: -150, r: 6, name: '橙子医院' },
+  coldPickup: { x: -168, z: 230, r: 5 },
+  coldDrop: { x: 120, z: 214, r: 6 },
+  pump: { x: 230, z: 214, r: 5.5 },
+  rug: { x: 58, z: 58, r: 4 },
   loot: [
-    { x: 72, z: 36 },
-    { x: 72, z: 60 },
-    { x: 120, z: 48 },
+    { x: 58, z: 40 },
+    { x: 58, z: 78 },
+    { x: 96, z: 58 },
   ],
+  airport: { x: -500, z: -390, r: 12 },
+  marina: { x: -380, z: 239, r: 10 },
 };
+
+export const GATES = [
+  { x: 40, y: 24, z: 430 },
+  { x: 240, y: 32, z: 510 },
+  { x: -140, y: 28, z: 470 },
+];
+
+export const GUARD_SPOTS = [
+  { x: -450, z: 239 },
+  { x: -360, z: 239 },
+  { x: -320, z: 307 },
+];
+
+export const PIERS = [
+  { x0: -520, x1: -210, z0: 230, z1: 248 },
+  { x0: -500, x1: -210, z0: 298, z1: 316 },
+  { x0: -470, x1: -230, z0: 366, z1: 384 },
+];
 
 export const MISSIONS = [
   {
     id: 'cold',
     name: '冷钱包专送',
-    desc: '北码头有一枚硬件钱包。取回后送到海滩公寓的保险箱，限时完成。',
+    desc: '港口有一枚硬件钱包。取回后送到海滩公寓的保险箱，限时完成。',
     reward: '0.20 ETH',
   },
   {
@@ -140,33 +123,40 @@ export const MISSIONS = [
     desc: '橙氏基金门口有三袋「流动性」。抢走后逃回安全屋。监管会立刻盯上你。',
     reward: '0.015 BTC',
   },
+  {
+    id: 'sky',
+    name: '航线投送',
+    desc: '到机场登上轻航，拉起来，穿过海上的三道橙环。',
+    reward: '0.020 BTC',
+  },
+  {
+    id: 'harbor',
+    name: '港口清场',
+    desc: '码头有三名护卫。解决他们，再把直升机拉到 12 米以上离开。',
+    reward: '5 SOL',
+  },
 ];
 
 export const HEADLINES = [
   '链上晚报：海滩 NFT 日落又归零了',
   'SEC 发言人：我们只是来度假，顺便冻结你',
   '大橙子：今天的 K 线很橙',
-  '分析师上调 ORNG 目标价，理由是「闻起来像柑橘」',
-  '本地新闻：有人用冷钱包换了一客虾',
+  '机场通报：有人把轻航当成了冷钱包',
+  '本地新闻：港口护卫不收狗狗币',
   '链上越野缺货，车行只收游戏里的钱',
   '谣言：橙氏基金的流动性在后备箱里',
-  '气象：霓虹日落持续，适合跑路',
+  '气象：霓虹日落会转夜，适合跑路',
 ];
 
-export const SAVE_KEY = 'vice-chain-3d-save-v1';
+export const SAVE_KEY = 'vice-chain-3d-save-v2';
 
-export function linePos(i) {
-  return ORIGIN + i * CELL;
+export function inWater(x, z) {
+  if (PIERS.some((p) => x >= p.x0 && x <= p.x1 && z >= p.z0 && z <= p.z1)) return false;
+  if (z > 348 && x > -200) return true;
+  if (x < -210 && z > 188 && z < 530 && x > -590) return true;
+  return false;
 }
 
-export function roadSegments() {
-  const lines = [];
-  const a = ORIGIN - 8;
-  const b = ORIGIN + (LINES - 1) * CELL + 8;
-  for (let i = 0; i < LINES; i += 1) {
-    const p = linePos(i);
-    lines.push({ x1: a, z1: p, x2: b, z2: p });
-    lines.push({ x1: p, z1: a, x2: p, z2: b });
-  }
-  return lines;
+export function missionName(id) {
+  return MISSIONS.find((m) => m.id === id)?.name || id;
 }

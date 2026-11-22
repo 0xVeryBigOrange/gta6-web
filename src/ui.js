@@ -14,8 +14,15 @@ export function createUI(root) {
       <div id="prompt" class="panel"></div>
       <div id="speedo"></div>
       <div id="fps"></div>
+      <div id="vitals" class="panel">
+        <div class="bar"><span id="hp-fill"></span></div>
+        <div class="bar armor"><span id="ar-fill"></span></div>
+        <div id="weapon-label"></div>
+      </div>
+      <div id="crosshair"></div>
       <div id="toasts"></div>
     </div>
+    <div id="hurt"></div>
     <div id="title" class="overlay on">
       <div class="title-card panel">
         <div style="font-size:42px">🍊</div>
@@ -27,7 +34,7 @@ export function createUI(root) {
           <button class="ghost" id="btn-continue" type="button">继续游戏</button>
           <button class="ghost" id="btn-help-title" type="button">操作说明</button>
         </div>
-        <p class="fine">原创恶搞，与任何游戏发行商无关。城市、车辆与角色均为程序生成。<br/>不连接真实钱包，不涉及真实资金。行情只读，交易发生在本地存档里。</p>
+        <p class="fine">原创恶搞，与任何游戏发行商无关。角色、楼宇与部分载具使用 CC0 模型。<br/>不连接真实钱包，不涉及真实资金。行情只读，交易发生在本地存档里。</p>
       </div>
     </div>
     <div id="pause" class="overlay">
@@ -47,13 +54,15 @@ export function createUI(root) {
       <div class="menu-card panel">
         <h2>操作说明</h2>
         <ul class="help-list">
-          <li>W A S D / 方向键：行走，驾车时加油、刹车与转向</li>
-          <li>Shift：奔跑</li>
-          <li>鼠标移动：转动视角。点击画面锁定鼠标，滚轮缩放</li>
-          <li>F：上车 / 下车。征用路人的车会增加通缉</li>
-          <li>E：交易所、任务终端、车行、房产、拉盘</li>
-          <li>M：任务列表 · H：帮助 · Esc：暂停 · 空格：喇叭</li>
-          <li>手机：左下摇杆移动，右半屏滑动看四周</li>
+          <li>W A S D：行走或驾驶。Shift 奔跑，开车时略微加速</li>
+          <li>鼠标移动：视角。点击画面锁定鼠标，滚轮缩放</li>
+          <li>F：上下车、上船、上飞机。征用别人的载具会增加通缉</li>
+          <li>飞机：Shift 加油门，Ctrl 收油，W/S 俯仰，A/D 滚转。速度够了会离地</li>
+          <li>直升机：Shift 或空格上升，Ctrl 下降，W/S 前后，A/D 转向</li>
+          <li>船只能在海里和港口像样地开</li>
+          <li>鼠标左键攻击。1 拳头，2 手枪，3 步枪，R 换弹</li>
+          <li>E：交易所、任务、车行、房产。M 任务，H 帮助，Esc 暂停，空格喇叭</li>
+          <li>倒下会在橙子医院醒来。手机：摇杆、右半屏看四周、开火键</li>
         </ul>
         <p class="fine">打开菜单时城市时间会暂停。进度写入浏览器 localStorage。</p>
         <button class="primary" id="btn-help-close" type="button">知道了</button>
@@ -62,10 +71,17 @@ export function createUI(root) {
     <div id="modal" class="overlay">
       <div class="modal-card panel" id="modal-body"></div>
     </div>
+    <div id="boot" class="overlay on">
+      <div class="title-card panel">
+        <h2>正在铺设城区…</h2>
+        <p id="boot-msg" class="fine">加载角色、楼宇与天空</p>
+      </div>
+    </div>
     <div id="touch">
       <div id="joy"><div id="knob"></div></div>
       <div id="lookpad"></div>
       <div class="touch-buttons">
+        <button type="button" id="t-fire">开火</button>
         <button type="button" id="t-run">奔跑</button>
         <button type="button" id="t-car">上车</button>
         <button type="button" id="t-use">互动</button>
@@ -149,7 +165,24 @@ export function createUI(root) {
       $('#speedo').textContent = text || '';
     },
     setFps(n) {
-      $('#fps').textContent = `${n} FPS`;
+      $('#fps').textContent = String(n);
+    },
+    setBoot(on, text) {
+      $('#boot').classList.toggle('on', !!on);
+      if (text) $('#boot-msg').textContent = text;
+    },
+    setVitals(hp, armor, weapon) {
+      $('#hp-fill').style.width = `${Math.max(0, Math.min(100, hp))}%`;
+      $('#ar-fill').style.width = `${Math.max(0, Math.min(100, armor))}%`;
+      $('#weapon-label').textContent = weapon;
+    },
+    setCrosshair(on) {
+      $('#crosshair').classList.toggle('on', !!on);
+    },
+    flashHurt() {
+      const el = $('#hurt');
+      el.classList.add('on');
+      setTimeout(() => el.classList.remove('on'), 140);
     },
     setStars(level) {
       const row = $('#star-row');
@@ -413,16 +446,17 @@ export function createUI(root) {
         };
         btn.addEventListener('pointerdown', (e) => {
           e.preventDefault();
-          if (key === 'run') on(true);
+          if (key === 'run' || key === 'fire') on(true);
           else pad[key] = true;
         });
         btn.addEventListener('pointerup', () => {
-          if (key === 'run') on(false);
+          if (key === 'run' || key === 'fire') on(false);
         });
         btn.addEventListener('pointerleave', () => {
-          if (key === 'run') on(false);
+          if (key === 'run' || key === 'fire') on(false);
         });
       };
+      hold('#t-fire', 'fire');
       hold('#t-run', 'run');
       hold('#t-car', 'car');
       hold('#t-use', 'interact');

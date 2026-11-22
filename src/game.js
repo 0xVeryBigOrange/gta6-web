@@ -1,669 +1,1124 @@
 import * as THREE from 'three';
-import { createWorld } from './world.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createUI } from './ui.js';
 import { createInput } from './input.js';
 import { createAudio } from './audio.js';
-import { loadSave, writeSave } from './save.js';
-import { getOrngMult, getPriceSource, getPrices, refreshPrices, setOrngMult, tickSimulated } from './prices.js';
+import { loadGameAssets } from './assets.js';
+import { buildWorld } from './world.js';
+import { createActor, locomotion } from './actors.js';
+import { buildBike, buildHeli, buildPlane, spinParts } from './rides.js';
 import {
-  BUILD_LIMIT,
-  CARS,
-  CELL,
   COINS,
-  LINES,
+  GATES,
+  GUARD_SPOTS,
   MISSIONS,
-  ORIGIN,
   PROPS,
   SPOTS,
   STARTING,
-  WORLD,
-  linePos,
-  roadSegments,
+  VEHICLES,
+  inWater,
+  missionName,
 } from './config.js';
+import { getOrngMult, getPriceSource, getPrices, refreshPrices, setOrngMult, tickSimulated } from './prices.js';
+import { loadSave, writeSave } from './save.js';
 import { angNorm, clamp, dist2, fmtNum, fmtUsd, mulberry32 } from './util.js';
 
-const DROPS = [
-  { id: 'BTC', amt: 0.0015 },
-  { id: 'ETH', amt: 0.02 },
-  { id: 'SOL', amt: 0.35 },
-  { id: 'DOGE', amt: 60 },
-  { id: 'ORNG', amt: 80 },
-];
+const WEAPONS = {
+  fist: { name: '拳头', dmg: 24, cd: 0.48, range: 2.3 },
+  pistol: { name: '手枪', dmg: 28, cd: 0.32, range: 70, mag: 12 },
+  rifle: { name: '步枪', dmg: 16, cd: 0.1, range: 110, mag: 30 },
+};
 
-function missionName(id) {
-  return MISSIONS.find((m) => m.id === id)?.name || id;
-}
+const PACK = { male: 'male', female: 'female', worker: 'worker', suit: 'suit' };
 
 export class Game {
   constructor(root) {
     this.root = root;
     this.ui = createUI(root);
     this.input = createInput(this.ui.canvas);
-    this.ui.bindTouch(this.input.pad);
     this.audio = createAudio();
-    this.mode = 'title';
-    this.started = false;
+    this.ui.bindTouch(this.input.pad);
+    this.mode = 'boot';
+    this.ready = false;
     this.time = 0;
-    this.camYaw = 0.6;
-    this.camPitch = -0.22;
-    this.camDist = 8;
+    this.last = 0;
+    this.frameDt = 0;
+    this.camYaw = 0.4;
+    this.camPitch = 0.35;
+    this.camDist = 7.2;
+    this.confirmNew = false;
+    this.freezePolice = false;
+    this.script = null;
+    this.fireLatch = false;
     this.wanted = 0;
     this.wantedTimer = 0;
     this.bustTimer = 0;
+    this.combatWantedCd = 0;
+    this.invuln = 0;
+    this.downTimer = 0;
+    this.weapon = 'fist';
+    this.cooldown = 0;
+    this.reload = 0;
+    this.animLock = 0;
+    this.ammo = {
+      pistol: { mag: 12, res: 48 },
+      rifle: { mag: 30, res: 90 },
+    };
     this.mission = null;
-    this.vehicle = null;
-    this.freezePolice = false;
-    this.confirmNew = false;
-    this.walletSig = '';
-    this.objectiveSig = '';
-    this.promptSig = '';
-    this.starSig = -1;
-    this.coinSweep = false;
-    this.crashed = null;
-    this.fpsFrames = 0;
-    this.fpsWall = performance.now();
-    this.priceTimer = 30;
-    this.simTimer = 0;
-    this.saveTimer = 0;
-    this.headlineTimer = 0;
-    this.suppressLock = false;
-    this.rng = mulberry32(0x51ce5);
-
-    this.usd = STARTING.usd;
-    this.bal = { ...STARTING.bal };
-    this.ownedCars = new Set(['runner']);
-    this.ownedProps = new Set();
     this.done = new Set();
     this.collected = new Set();
+    this.ownedCars = new Set(['sedan']);
+    this.ownedProps = new Set();
+    this.usd = STARTING.usd;
+    this.bal = { ...STARTING.bal };
+    this.objectiveSig = '';
+    this.walletSig = '';
+    this.promptSig = '';
+    this.starSig = -1;
+    this.headlineTimer = 0;
+    this.priceTimer = 0;
+    this.tod = 0.56;
+    this.vehicles = [];
+    this.npcs = [];
+    this.coins = [];
+    this.police = [];
+    this.guards = [];
+    this.sparks = [];
+    this.player = { x: SPOTS.spawn.x, z: SPOTS.spawn.z, y: 0, yaw: 0, speed: 0, hp: 100, armor: 25 };
+    this.vehicle = null;
+    this.rng = mulberry32(11);
+    this.wireUi();
+    this.ui.setContinueEnabled(!!loadSave());
+    this.ui.setBoot(true, '正在铺设城区…');
+    this.debug = this.makeDebug();
+  }
 
+  wireUi() {
+    this.ui.onNew = () => this.newGame();
+    this.ui.onContinue = () => this.continueGame();
+    this.ui.onResume = () => this.setMode('play');
+    this.ui.onQuit = () => {
+      this.save();
+      this.setMode('title');
+    };
+    this.ui.onSave = () => {
+      this.save();
+      this.ui.toast('已写入本地存档');
+    };
+    this.ui.onToggleSound = () => this.ui.setSoundLabel(this.audio.toggle());
+    this.ui.onOpenExchange = () => this.openModal('exchange');
+    this.ui.onTrade = (id, side, amount) => this.trade(id, side, amount);
+    this.ui.onAcceptMission = (id) => this.acceptMission(id);
+    this.ui.onAbandon = () => this.abandonMission();
+    this.ui.onBuy = (id, pay) => this.buy(id, pay);
+    this.ui.onCloseModal = () => this.closeModal();
+    this.ui.setSoundLabel(true);
+  }
+
+  makeDebug() {
+    return {
+      tp: (x, z, y = null) => this.teleport(x, z, y),
+      cam: (yaw, pitch, dist) => {
+        if (yaw != null) this.camYaw = yaw;
+        if (pitch != null) this.camPitch = pitch;
+        if (dist != null) this.camDist = dist;
+      },
+      setWanted: (n) => {
+        this.wanted = clamp(n, 0, 5);
+        this.wantedTimer = 0;
+        this.ensurePolice(true);
+      },
+      setFreezePolice: (v) => {
+        this.freezePolice = !!v;
+      },
+      holdFor: (seconds, spec = {}) => {
+        this.script = {
+          until: this.time + seconds,
+          axis: spec.axis || { x: 0, y: 0 },
+          fire: !!spec.fire,
+          boost: !!spec.boost,
+          descend: !!spec.descend,
+        };
+      },
+      clearHold: () => {
+        this.script = null;
+      },
+      give: (weapon) => {
+        if (WEAPONS[weapon]) this.weapon = weapon;
+      },
+      hurt: (n) => this.hurt(n),
+      enter: () => this.toggleVehicle(),
+      interact: () => this.interact(),
+      spawnDummy: (dist = 6) => this.spawnDummy(dist),
+      snapshot: () => this.snapshot(),
+    };
+  }
+
+  async boot() {
+    this.setupThree();
+    try {
+      this.assets = await loadGameAssets(this.renderer, (text) => this.ui.setBoot(true, text));
+    } catch (error) {
+      this.ui.setBoot(true, '城区加载失败');
+      throw error;
+    }
+    if (this.assets.environment) this.scene.environment = this.assets.environment;
+    this.world = buildWorld(this.scene, this.assets);
+    this.prepareTemplates();
+    this.spawnCast();
+    this.ready = true;
+    this.mode = 'title';
+    this.ui.setBoot(false);
+    this.ui.showTitle();
+    this.pushPrices();
+    refreshPrices(this.rng).then(() => {
+      if (this.mode !== 'boot') this.pushPrices();
+    });
+    this.last = performance.now();
+    this.loop();
+  }
+
+  setupThree() {
+    this.scene = new THREE.Scene();
+    this.scene.fog = new THREE.FogExp2(0xd7c2a4, 0.00235);
+    this.camera = new THREE.PerspectiveCamera(62, 1, 0.1, 2200);
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.ui.canvas,
       antialias: true,
       powerPreference: 'high-performance',
       preserveDrawingBuffer: true,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
-    this.renderer.setSize(root.clientWidth, root.clientHeight, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-    this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(62, 1, 0.1, 700);
-    this.world = createWorld(this.scene);
-    this.player = this.createPlayer();
-    this.scene.add(this.player.mesh);
-    this.cars = [];
-    this.garage = [];
-    this.police = [];
-    this.peds = [];
-    this.coins = [];
-    this.spawnGarage();
-    this.spawnTraffic(8);
-    this.spawnPeds(16);
-    this.spawnCoins();
-    this.spawnProps();
-    this.beacon = this.createBeacon();
-    this.scene.add(this.beacon);
-
-    this.clock = new THREE.Clock();
-    this.bindUI();
-    this.ui.setContinueEnabled(!!loadSave());
-    this.ui.setSoundLabel(true);
+    this.sun = new THREE.DirectionalLight(0xfff1dd, 2.5);
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(1024, 1024);
+    this.sun.shadow.camera.near = 2;
+    this.sun.shadow.camera.far = 140;
+    this.sun.shadow.camera.left = -48;
+    this.sun.shadow.camera.right = 48;
+    this.sun.shadow.camera.top = 48;
+    this.sun.shadow.camera.bottom = -48;
+    this.sun.shadow.bias = -0.00035;
+    this.sun.shadow.normalBias = 0.04;
+    this.scene.add(this.sun, this.sun.target);
+    this.hemi = new THREE.HemisphereLight(0xcfe6ff, 0x6a5438, 0.7);
+    this.scene.add(this.hemi);
+    this.fill = new THREE.DirectionalLight(0x88b4ff, 0.25);
+    this.scene.add(this.fill);
+    const skyGeo = new THREE.SphereGeometry(900, 24, 16);
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: {
+        uTop: { value: new THREE.Color(0x6eb6e6) },
+        uHorizon: { value: new THREE.Color(0xf0c39a) },
+        uSun: { value: new THREE.Vector3(0.4, 0.6, 0.2) },
+      },
+      vertexShader: `
+        varying vec3 vPos;
+        void main() {
+          vec4 w = modelMatrix * vec4(position, 1.0);
+          vPos = w.xyz;
+          gl_Position = projectionMatrix * viewMatrix * w;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vPos;
+        uniform vec3 uTop;
+        uniform vec3 uHorizon;
+        uniform vec3 uSun;
+        void main() {
+          vec3 n = normalize(vPos);
+          float h = smoothstep(-0.08, 0.55, n.y);
+          vec3 col = mix(uHorizon, uTop, h);
+          float sun = pow(max(dot(n, normalize(uSun)), 0.0), 140.0);
+          col += vec3(1.0, 0.82, 0.55) * sun;
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+    });
+    this.sky = new THREE.Mesh(skyGeo, skyMat);
+    this.scene.add(this.sky);
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(800, 600), 0.22, 0.45, 0.9);
+    this.composer.addPass(this.bloom);
+    this.composer.addPass(new OutputPass());
     this.resize();
     window.addEventListener('resize', () => this.resize());
-    document.addEventListener('pointerlockchange', () => {
-      if (!document.pointerLockElement && this.mode === 'play' && !this.suppressLock) this.pause();
-    });
-
-    this.debug = {
-      tp: (x, z) => this.teleport(x, z),
-      setWanted: (n) => {
-        this.wanted = clamp(n, 0, 5);
-        this.wantedTimer = 0;
-        this.ensurePolice();
-      },
-      setFreezePolice: (v) => {
-        this.freezePolice = v;
-      },
-      cam: (yaw, pitch, dist) => {
-        if (yaw != null) this.camYaw = yaw;
-        if (pitch != null) this.camPitch = pitch;
-        if (dist != null) this.camDist = dist;
-      },
-      snapshot: () => this.snapshot(),
-    };
-  }
-
-  start() {
-    const loop = () => {
-      const dt = Math.min(this.clock.getDelta(), 0.05);
-      this.time += dt;
-      this.frame(dt);
-      requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
-    refreshPrices(this.rng).then(() => this.pushPrices());
   }
 
   resize() {
-    const w = this.root.clientWidth || window.innerWidth;
-    const h = this.root.clientHeight || window.innerHeight;
-    this.camera.aspect = w / Math.max(1, h);
+    const w = window.innerWidth;
+    const h = Math.max(1, window.innerHeight);
+    this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    const ratio = Math.min(window.devicePixelRatio || 1, 1.35);
+    this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(w, h, false);
+    this.composer.setPixelRatio(ratio);
+    this.composer.setSize(w, h);
   }
 
-  bindUI() {
-    this.ui.onNew = () => {
-      if (loadSave() && !this.confirmNew) {
-        this.confirmNew = true;
-        this.ui.toast('再点一次「新游戏」会覆盖本地存档');
-        return;
-      }
-      this.confirmNew = false;
-      this.newGame();
+  prepareTemplates() {
+    this.templates = {
+      sedan: this.assets.cars.sedan,
+      suv: this.assets.cars.suv,
+      sport: this.assets.cars['hatchback-sports'],
+      taxi: this.assets.cars.taxi,
+      race: this.assets.cars.race,
+      police: this.assets.cars.police,
+      boat: this.assets.boat,
+      bike: buildBike(),
+      heli: buildHeli(),
+      plane: buildPlane(),
     };
-    this.ui.onContinue = () => {
-      const data = loadSave();
-      if (!data) return;
-      this.applyState(data, false);
-      this.beginPlay('存档已读取');
-    };
-    this.ui.onResume = () => this.resume();
-    this.ui.onQuit = () => {
-      if (this.started) this.save();
-      this.started = false;
-      this.mode = 'title';
-      this.vehicle = null;
-      this.player.mesh.visible = true;
-      this.ui.hidePause();
-      this.ui.hideHelp();
-      this.ui.closeModal();
-      this.ui.showTitle();
-      this.ui.setContinueEnabled(!!loadSave());
-      this.audio.setEngine(0);
-      this.audio.setSiren(0);
-    };
-    this.ui.onSave = () => {
-      this.save();
-      this.ui.toast('已写入本地存档');
-    };
-    this.ui.onToggleSound = () => {
-      const on = this.audio.toggle();
-      this.ui.setSoundLabel(on);
-    };
-    this.ui.onOpenExchange = () => {
-      if (this.mode !== 'play') return;
-      this.openModal('exchange');
-    };
-    this.ui.onCloseModal = () => this.closeModal();
-    this.ui.onTrade = (id, side, amount) => this.trade(id, side, amount);
-    this.ui.onAcceptMission = (id) => this.acceptMission(id);
-    this.ui.onAbandon = () => this.abandonMission();
-    this.ui.onBuy = (id, pay) => this.buy(id, pay);
   }
 
-  newGame() {
-    this.applyState(
-      {
-        usd: STARTING.usd,
-        bal: { ...STARTING.bal },
-        ownedCars: ['runner'],
-        ownedProps: [],
-        done: [],
-        collected: [],
-        wanted: 0,
-        mission: null,
-        orngMult: 1,
-        player: { x: SPOTS.spawn.x, z: SPOTS.spawn.z, camYaw: 0.4, camPitch: -0.22 },
-      },
-      true,
+  makeVehicle(id, x, z, yaw, flags = {}) {
+    const def = VEHICLES.find((item) => item.id === id);
+    const mesh = this.templates[id].clone(true);
+    mesh.traverse((obj) => {
+      if (!obj.isMesh) return;
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+    });
+    this.scene.add(mesh);
+    const vehicle = {
+      id,
+      def,
+      kind: def.kind,
+      mesh,
+      x,
+      z,
+      y: def.kind === 'boat' ? 0.2 : def.kind === 'heli' ? 0.35 : 0,
+      yaw,
+      speed: 0,
+      throttle: 0,
+      pitch: 0,
+      roll: 0,
+      vy: 0,
+      collective: 0.42,
+      personal: !!flags.personal,
+      traffic: !!flags.traffic,
+      police: !!flags.police,
+      hotwired: !!flags.personal && this.ownedCars.has(id),
+      seg: Math.floor(this.rng() * Math.max(1, this.world.roads.length)),
+      segT: this.rng(),
+      dir: this.rng() > 0.5 ? 1 : -1,
+      propeller: null,
+      rotor: null,
+      tailRotor: null,
+    };
+    vehicle.propeller = mesh.getObjectByName('propeller');
+    vehicle.rotor = mesh.getObjectByName('rotor');
+    vehicle.tailRotor = mesh.getObjectByName('tailRotor');
+    this.vehicles.push(vehicle);
+    this.syncRide(vehicle, 0);
+    return vehicle;
+  }
+
+  makeNpc(kind, dummy = false) {
+    const actor = createActor(this.assets.people[PACK[kind] || 'male']);
+    this.scene.add(actor.model);
+    const npc = {
+      actor,
+      kind,
+      x: 0,
+      z: 0,
+      yaw: 0,
+      hp: 100,
+      alive: true,
+      team: 'civ',
+      state: 'walk',
+      brave: this.rng() > 0.7,
+      armed: false,
+      speed: 0,
+      tx: 0,
+      tz: 0,
+      timer: 2,
+      shootCd: 1,
+      animLock: 0,
+      down: 0,
+      active: true,
+      placed: false,
+      dummy,
+    };
+    actor.play('Idle');
+    return npc;
+  }
+
+  spawnCast() {
+    this.actor = createActor(this.assets.people.male);
+    this.scene.add(this.actor.model);
+    this.gun = this.assets.pistol.clone(true);
+    this.gun.position.set(0.02, 0.04, 0.08);
+    this.rifle = new THREE.Group();
+    const rifleMat = new THREE.MeshStandardMaterial({ color: 0x24282e, metalness: 0.65, roughness: 0.38 });
+    const rifleBody = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.07, 0.62), rifleMat);
+    rifleBody.position.z = 0.16;
+    this.rifle.add(rifleBody);
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.16), rifleMat);
+    stock.position.set(0, -0.02, -0.12);
+    this.rifle.add(stock);
+    const mount = this.actor.hand || this.actor.model;
+    mount.add(this.gun, this.rifle);
+    this.gun.visible = false;
+    this.rifle.visible = false;
+
+    this.makeVehicle('sedan', 4, 40, 0, { personal: true });
+    this.makeVehicle('suv', -50, 36, Math.PI, { personal: true });
+    this.makeVehicle('sport', -50, 48, Math.PI, { personal: true });
+    this.makeVehicle('taxi', -66, 36, 0, { personal: true });
+    this.makeVehicle('race', -66, 48, 0, { personal: true });
+    this.makeVehicle('bike', -50, 22, 0.2, { personal: true });
+    this.makeVehicle('boat', -400, 280, 0.4, { personal: true });
+    this.makeVehicle('heli', -380, 239, Math.PI / 2, { personal: true });
+    this.makeVehicle('plane', -510, -390, Math.PI / 2, { personal: true });
+    this.makeVehicle('police', 86, -36, Math.PI, { police: true });
+    for (let i = 0; i < 8; i += 1) {
+      const id = ['sedan', 'taxi', 'suv'][i % 3];
+      const car = this.makeVehicle(id, 0, 0, 0, { traffic: true });
+      this.parkOnRoad(car);
+    }
+
+    const kinds = ['female', 'worker', 'male', 'suit', 'female', 'worker'];
+    for (let i = 0; i < 14; i += 1) {
+      const npc = this.makeNpc(kinds[i % kinds.length]);
+      this.placeWalker(npc, i);
+      this.npcs.push(npc);
+    }
+    for (let i = 0; i < 4; i += 1) {
+      const cop = this.makeNpc('suit');
+      cop.team = 'police';
+      cop.armed = true;
+      cop.hp = 80;
+      cop.active = false;
+      cop.actor.model.visible = false;
+      this.npcs.push(cop);
+      this.police.push(cop);
+    }
+
+    const coinGeo = new THREE.TorusGeometry(0.38, 0.12, 8, 14);
+    const drops = [
+      { id: 'ORNG', amt: 40 },
+      { id: 'DOGE', amt: 25 },
+      { id: 'SOL', amt: 0.2 },
+      { id: 'ETH', amt: 0.01 },
+      { id: 'BTC', amt: 0.0004 },
+    ];
+    this.world.roads.forEach((seg, i) => {
+      if (i % 3 !== 0 || this.coins.length >= 16) return;
+      const t = 0.35 + (i % 4) * 0.12;
+      const drop = drops[this.coins.length % drops.length];
+      const color = new THREE.Color(COINS.find((c) => c.id === drop.id).color);
+      const mesh = new THREE.Mesh(
+        coinGeo,
+        new THREE.MeshStandardMaterial({ color, metalness: 0.7, roughness: 0.25, emissive: color, emissiveIntensity: 0.25 }),
+      );
+      mesh.rotation.x = Math.PI / 2;
+      const coin = {
+        id: `c${i}`,
+        drop,
+        mesh,
+        x: seg.ax + (seg.bx - seg.ax) * t,
+        z: seg.az + (seg.bz - seg.az) * t,
+      };
+      this.scene.add(mesh);
+      this.coins.push(coin);
+    });
+
+    this.beacon = new THREE.Mesh(
+      new THREE.ConeGeometry(0.7, 1.6, 8),
+      new THREE.MeshStandardMaterial({ color: 0xff8a1e, emissive: 0xff6a00, emissiveIntensity: 0.6 }),
     );
-    this.coinSweep = false;
-    this.beginPlay('欢迎来到 Vice Chain。路边的橙行者按 F 就能开。');
+    this.beacon.position.y = 2.4;
+    this.scene.add(this.beacon);
+    this.rings = GATES.map((gate) => {
+      const mesh = new THREE.Mesh(
+        new THREE.TorusGeometry(7, 0.25, 8, 24),
+        new THREE.MeshStandardMaterial({ color: 0xff8a1e, emissive: 0xff6a00, emissiveIntensity: 0.8 }),
+      );
+      mesh.position.set(gate.x, gate.y, gate.z);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      return mesh;
+    });
+    this.bags = SPOTS.loot.map((spot) => {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(0.7, 0.45, 0.4),
+        new THREE.MeshStandardMaterial({ color: 0xffb020, roughness: 0.5 }),
+      );
+      mesh.position.set(spot.x, 0.4, spot.z);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      return mesh;
+    });
+    this.caseMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.55, 0.28, 0.4),
+      new THREE.MeshStandardMaterial({ color: 0x222833, metalness: 0.5, roughness: 0.35 }),
+    );
+    this.caseMesh.visible = false;
+    this.scene.add(this.caseMesh);
+    const sparkGeo = new THREE.SphereGeometry(0.12, 6, 6);
+    const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffc14a });
+    for (let i = 0; i < 8; i += 1) {
+      const mesh = new THREE.Mesh(sparkGeo, sparkMat);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this.sparks.push({ mesh, life: 0 });
+    }
   }
 
-  beginPlay(message) {
-    this.started = true;
-    this.mode = 'play';
-    this.ui.hideHelp();
-    this.ui.hidePause();
-    this.ui.closeModal();
-    this.ui.setPlayVisible(true);
-    this.audio.resume();
-    this.input.requestLock();
-    this.pushPrices();
-    this.ui.toast(message);
-    this.save();
+  parkOnRoad(vehicle) {
+    const seg = this.world.roads[vehicle.seg % this.world.roads.length];
+    vehicle.x = seg.ax + (seg.bx - seg.ax) * vehicle.segT;
+    vehicle.z = seg.az + (seg.bz - seg.az) * vehicle.segT;
+    vehicle.yaw = Math.atan2(seg.bx - seg.ax, seg.bz - seg.az);
   }
 
-  applyState(data, reset) {
-    this.usd = data.usd;
-    this.bal = { ...STARTING.bal, ...data.bal };
-    this.ownedCars = new Set(data.ownedCars || ['runner']);
-    this.ownedProps = new Set(data.ownedProps || []);
-    this.done = new Set(data.done || []);
-    this.collected = new Set(data.collected || []);
-    this.wanted = data.wanted || 0;
-    this.wantedTimer = 0;
-    this.bustTimer = 0;
-    this.mission = data.mission ? structuredClone(data.mission) : null;
-    setOrngMult(data.orngMult || 1);
-    this.vehicle = null;
-    this.player.mesh.visible = true;
-    for (const coin of this.coins) {
-      coin.got = this.collected.has(coin.id);
-      coin.mesh.visible = !coin.got;
+  placeWalker(npc, index) {
+    const seg = this.world.roads[(index * 3) % this.world.roads.length];
+    const t = 0.2 + this.rng() * 0.6;
+    npc.x = seg.ax + (seg.bx - seg.ax) * t + 8;
+    npc.z = seg.az + (seg.bz - seg.az) * t + (index % 2 ? 8 : -8);
+    if (inWater(npc.x, npc.z) || this.world.blocked(npc.x, npc.z, 0.4, 'walk')) {
+      npc.x = SPOTS.spawn.x + 6 + index;
+      npc.z = SPOTS.spawn.z + 4;
     }
-    if (reset) {
-      for (const car of this.garage) {
-        const def = CARS.find((c) => c.id === car.defId);
-        car.x = def.x;
-        car.z = def.z;
-        car.yaw = def.yaw;
-        car.speed = 0;
-      }
-      this.teleport(SPOTS.spawn.x, SPOTS.spawn.z);
-      this.camYaw = 0.4;
-      this.camPitch = -0.22;
-    } else if (data.player) {
-      this.teleport(data.player.x, data.player.z);
-      this.camYaw = data.player.camYaw ?? 0.4;
-      this.camPitch = data.player.camPitch ?? -0.22;
-      for (const saved of data.cars || []) {
-        const car = this.garage.find((c) => c.defId === saved.id);
-        if (!car) continue;
-        car.x = saved.x;
-        car.z = saved.z;
-        car.yaw = saved.yaw;
-        car.speed = 0;
-      }
-    }
-    this.ensurePolice();
-    this.walletSig = '';
+    npc.tx = npc.x + 12;
+    npc.tz = npc.z;
   }
 
-  frame(dt) {
-    this.handleGlobalKeys();
-    if (!this.started) {
-      this.syncCars(0);
-      this.updateCinematic(dt);
-    } else if (this.mode === 'play') {
-      if (!this.crashed) {
-        try {
-          this.updateSim(dt);
-        } catch (err) {
-          this.crashed = err;
-          console.error(err);
-          this.ui.toast(`出错了：${err.message}`);
-          this.pause();
-        }
-      }
-    } else {
-      this.syncCars(0);
-      this.world.update(this.time);
-      this.audio.setEngine(0);
-    }
-    this.input.endFrame();
-    this.renderer.render(this.scene, this.camera);
-    this.fpsFrames += 1;
-    const now = performance.now();
-    if (now - this.fpsWall >= 500) {
-      this.ui.setFps(Math.round((this.fpsFrames * 1000) / (now - this.fpsWall)));
+  loop = (now) => {
+    requestAnimationFrame(this.loop);
+    const wall = Math.min(0.05, (now - this.last) / 1000 || 0);
+    this.last = now;
+    this.frameDt = wall;
+    const step = this.mode === 'play' ? wall : 0;
+    if (step) this.time += step;
+    this.update(step, wall);
+    this.composer.render();
+    this.fpsAccum = (this.fpsAccum || 0) + wall;
+    this.fpsFrames = (this.fpsFrames || 0) + 1;
+    if (this.fpsAccum > 0.4) {
+      this.fps = Math.round(this.fpsFrames / this.fpsAccum);
+      this.fpsAccum = 0;
       this.fpsFrames = 0;
-      this.fpsWall = now;
+      const clock = this.clockLabel();
+      this.ui.setFps(`${this.fps} FPS · ${clock}`);
     }
+  };
+
+  clockLabel() {
+    const mins = Math.floor(this.tod * 24 * 60);
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   }
 
-  handleGlobalKeys() {
-    if (!this.started) return;
-    const esc = this.input.pressed('Escape') || this.input.pad.pause;
-    const help = this.input.pressed('KeyH');
-    if (esc) {
+  update(dt, wall) {
+    this.consumeKeys();
+    if (this.mode === 'title') {
+      this.camYaw += wall * 0.05;
+      this.focusAt(SPOTS.spawn.x, 0, SPOTS.spawn.z);
+    } else if (this.mode === 'play') {
+      const ctrl = this.controls();
+      if (this.downTimer > 0) {
+        this.downTimer -= dt;
+        if (this.downTimer <= 0) this.respawn();
+      } else {
+        this.updateRideOrPlayer(dt, ctrl);
+        this.updateCombat(dt, ctrl);
+      }
+      this.updateTraffic(dt);
+      this.updateNpcs(dt);
+      this.updateWanted(dt);
+      this.updateMission(dt);
+      this.updateCoins();
+      this.invuln = Math.max(0, this.invuln - dt);
+      this.combatWantedCd = Math.max(0, this.combatWantedCd - dt);
+      this.cooldown = Math.max(0, this.cooldown - dt);
+      this.reload = Math.max(0, this.reload - dt);
+      this.animLock = Math.max(0, this.animLock - dt);
+      this.priceTimer += dt;
+      if (this.priceTimer > 24) {
+        this.priceTimer = 0;
+        tickSimulated(this.rng);
+        refreshPrices(this.rng).then(() => this.pushPrices());
+      }
+    }
+    this.syncActors(dt);
+    this.updateCamera(wall);
+    this.updateTod(wall);
+    const focus = this.focus();
+    this.world.update(focus.x, focus.z, this.time);
+    this.updateSparks(wall);
+    this.updateHud(dt);
+    this.input.endFrame();
+    this.fireLatch = false;
+  }
+
+  controls() {
+    if (this.script && this.time < this.script.until) {
+      return {
+        axis: this.script.axis,
+        fire: this.script.fire,
+        boost: this.script.boost,
+        descend: this.script.descend,
+      };
+    }
+    return {
+      axis: this.input.axis(),
+      fire: this.input.fireHeld() || this.fireLatch,
+      boost: this.input.boost(),
+      descend: this.input.descend(),
+    };
+  }
+
+  consumeKeys() {
+    if (!this.ready) return;
+    if (this.input.pressed('Escape')) {
       if (this.ui.modalOpen()) this.closeModal();
       else if (this.ui.helpOpen()) this.ui.hideHelp();
-      else if (this.mode === 'play') this.pause();
-      else if (this.mode === 'pause') this.resume();
-    } else if (help && this.mode !== 'title') {
-      this.ui.showHelp();
+      else if (this.mode === 'play') this.setMode('pause');
+      else if (this.mode === 'pause') this.setMode('play');
     }
-  }
-
-  pause() {
-    if (!this.started || this.mode === 'pause') return;
-    this.suppressLock = true;
-    this.mode = 'pause';
-    this.input.clearKeys();
-    this.input.exitLock();
-    this.audio.setEngine(0);
-    this.audio.setSiren(0);
-    const net = this.netWorth();
-    this.ui.showPause(`现金 ${fmtUsd(this.usd)} · 净值 ${fmtUsd(net)} · 通缉 ${this.wanted} 星 · 任务完成 ${this.done.size}/4`);
-    setTimeout(() => {
-      this.suppressLock = false;
-    }, 0);
-  }
-
-  resume() {
-    this.ui.hideHelp();
-    this.ui.hidePause();
-    this.ui.closeModal();
-    this.mode = 'play';
-    this.input.requestLock();
-  }
-
-  openModal(kind) {
-    if (this.mode !== 'play' && this.mode !== 'modal') return;
-    this.suppressLock = true;
-    this.mode = 'modal';
-    this.input.clearKeys();
-    this.input.exitLock();
-    this.audio.setEngine(0);
-    if (kind === 'exchange') this.ui.openExchange(this.marketModel());
-    if (kind === 'missions') {
-      this.ui.openMissions({
-        active: this.mission?.id || null,
-        activeName: this.mission ? missionName(this.mission.id) : '',
-        done: [...this.done],
-      });
-    }
-    if (kind === 'dealer') {
-      this.ui.openShop({
-        title: '车行 · 用加密货币或现金提车',
-        usd: this.usd,
-        bal: this.bal,
-        prices: getPrices(),
-        items: CARS.map((car) => ({
-          id: car.id,
-          name: car.name,
-          blurb: car.blurb,
-          price: car.price,
-          owned: this.ownedCars.has(car.id),
-        })),
-      });
-    }
-    setTimeout(() => {
-      this.suppressLock = false;
-    }, 0);
-  }
-
-  closeModal() {
-    this.ui.closeModal();
-    if (this.started && this.mode === 'modal') {
-      this.mode = 'play';
-      this.input.requestLock();
-    }
-  }
-
-  updateCinematic() {
-    const ang = this.time * 0.08;
-    this.camera.position.set(Math.sin(ang) * 96, 34, 48 + Math.cos(ang) * 46);
-    this.camera.lookAt(0, 8, 24);
-    this.world.update(this.time);
-    this.world.followSun(0, 20);
-  }
-
-  updateSim(dt) {
-    const look = this.input.consumeLook();
-    this.camYaw -= look.x * 0.0022;
-    this.camPitch = clamp(this.camPitch - look.y * 0.0016, -0.55, 0.7);
-    this.camDist = clamp(this.camDist + look.wheel * 0.55, 4.2, 16);
+    if (this.mode !== 'play') return;
+    if (this.input.clicked()) this.input.requestLock();
+    if (this.input.pressed('KeyH')) this.ui.showHelp();
+    if (this.input.pressed('Escape')) return;
+    if (this.input.pressed('KeyP') || this.input.pad.pause) this.setMode('pause');
+    if (this.input.pressed('KeyM') || this.input.pad.mission) this.openModal('missions');
     if (this.input.pressed('KeyE') || this.input.pad.interact) this.interact();
     if (this.input.pressed('KeyF') || this.input.pad.car) this.toggleVehicle();
-    if (this.input.pressed('KeyM') || this.input.pad.mission) this.openModal('missions');
-    if (this.input.pressed('Space') && this.vehicle) this.audio.horn();
-
-    const axis = this.input.axis();
-    if (!this.vehicle) this.movePlayer(axis, dt);
-    else this.drive(axis, dt, look);
-
-    this.updateTraffic(dt);
-    this.updatePeds(dt);
-    this.updatePolice(dt);
-    this.updateWanted(dt);
-    this.updateCoins(dt);
-    this.updateMission(dt);
-    this.syncCars(dt);
-    this.updateCamera();
-    this.world.update(this.time);
-    this.world.followSun(this.player.x, this.player.z);
-    this.audio.setEngine(this.vehicle ? Math.abs(this.vehicle.speed) : 0);
-    this.audio.setSiren(this.wanted);
-    this.updateHud(dt);
-
-    this.priceTimer += dt;
-    this.simTimer += dt;
-    this.saveTimer += dt;
-    if (this.simTimer > 8) {
-      this.simTimer = 0;
-      tickSimulated(this.rng);
-      this.pushPrices();
-    }
-    if (this.priceTimer > 45) {
-      this.priceTimer = 0;
-      refreshPrices(this.rng).then(() => this.pushPrices());
-    }
-    if (this.saveTimer > 8) {
-      this.saveTimer = 0;
-      this.save();
-    }
+    if (this.input.pressed('Digit1')) this.weapon = 'fist';
+    if (this.input.pressed('Digit2')) this.weapon = 'pistol';
+    if (this.input.pressed('Digit3')) this.weapon = 'rifle';
+    if (this.input.pressed('KeyR')) this.startReload();
+    if (this.input.pressed('Space') && this.vehicle && this.vehicle.kind !== 'heli' && this.vehicle.kind !== 'plane') this.audio.horn();
   }
 
-  movePlayer(axis, dt) {
-    const speed = axis.run ? 12.2 : 6.3;
-    const sy = Math.sin(this.camYaw);
-    const cy = Math.cos(this.camYaw);
-    const dx = (sy * axis.y + cy * axis.x) * speed * dt;
-    const dz = (cy * axis.y - sy * axis.x) * speed * dt;
-    let nx = this.player.x + dx;
-    let nz = this.player.z + dz;
-    if (this.blocked(nx, this.player.z, 0.42) || this.hitsAnyCar(nx, this.player.z)) nx = this.player.x;
-    if (this.blocked(nx, nz, 0.42) || this.hitsAnyCar(nx, nz)) nz = this.player.z;
-    const moved = Math.hypot(nx - this.player.x, nz - this.player.z);
-    this.player.x = nx;
-    this.player.z = nz;
-    if (moved > 0.001) this.player.yaw = Math.atan2(dx, dz);
-    this.player.mesh.position.set(this.player.x, 0, this.player.z);
-    this.player.mesh.rotation.y = this.player.yaw;
-    const swing = moved > 0.001 ? Math.sin(this.time * (axis.run ? 14 : 9)) : 0;
-    const limbs = this.player.mesh.userData.limbs;
-    limbs.legL.rotation.x = swing * 0.7;
-    limbs.legR.rotation.x = -swing * 0.7;
-    limbs.armL.rotation.x = -swing * 0.55;
-    limbs.armR.rotation.x = swing * 0.55;
-    this.player.walking = moved > 0.001;
+  updateRideOrPlayer(dt, ctrl) {
+    if (this.vehicle) this.updateVehicle(this.vehicle, dt, ctrl);
+    else this.updatePlayer(dt, ctrl);
   }
 
-  drive(axis, dt, look) {
-    const car = this.vehicle;
-    if (axis.y !== 0) car.speed += axis.y * car.accel * dt;
-    else car.speed *= Math.max(0, 1 - 1.7 * dt);
-    if (Math.abs(car.speed) < 0.12) car.speed = 0;
-    car.speed = clamp(car.speed, -car.max * 0.42, car.max);
-    const steerSense = Math.min(1, Math.abs(car.speed) / 4.5) * (car.grip || 1);
-    car.yaw += axis.x * steerSense * 1.85 * dt * (car.speed >= 0 ? 1 : -1);
-    const nx = car.x + Math.sin(car.yaw) * car.speed * dt;
-    const nz = car.z + Math.cos(car.yaw) * car.speed * dt;
-    if (!this.carBlocked(nx, car.z, car)) car.x = nx;
-    else car.speed *= 0.4;
-    if (!this.carBlocked(car.x, nz, car)) car.z = nz;
-    else car.speed *= 0.4;
-    this.player.x = car.x;
-    this.player.z = car.z;
-    if (Math.abs(look.x) < 0.4 && Math.abs(look.y) < 0.4) {
-      this.camYaw += angNorm(car.yaw - this.camYaw) * Math.min(1, dt * 2.6);
+  updatePlayer(dt, ctrl) {
+    const speed = ctrl.boost ? 6.5 : 3.15;
+    const yaw = this.camYaw;
+    const sin = Math.sin(yaw);
+    const cos = Math.cos(yaw);
+    const mx = sin * ctrl.axis.y + cos * ctrl.axis.x;
+    const mz = cos * ctrl.axis.y - sin * ctrl.axis.x;
+    const nx = this.player.x + mx * speed * dt;
+    const nz = this.player.z + mz * speed * dt;
+    const next = this.world.slide(this.player.x, this.player.z, nx, nz, 0.4, 'walk');
+    const moved = Math.hypot(next.x - this.player.x, next.z - this.player.z);
+    this.player.speed = dt > 0 ? moved / dt : 0;
+    this.player.x = next.x;
+    this.player.z = next.z;
+    this.player.y = 0;
+    if (this.player.speed > 0.35) this.player.yaw = Math.atan2(mx, mz);
+  }
+
+  updateVehicle(v, dt, ctrl) {
+    if (v.kind === 'plane') this.updatePlane(v, dt, ctrl);
+    else if (v.kind === 'heli') this.updateHeli(v, dt, ctrl);
+    else this.updateGround(v, dt, ctrl);
+    this.player.x = v.x;
+    this.player.z = v.z;
+    this.player.y = v.y;
+    this.player.speed = Math.abs(v.speed);
+    this.player.yaw = v.yaw;
+  }
+
+  updateGround(v, dt, ctrl) {
+    const water = inWater(v.x, v.z);
+    let accel = v.def.accel;
+    let max = v.def.max;
+    if (v.kind === 'boat') {
+      if (!water) {
+        accel *= 0.05;
+        max = 2.4;
+      }
+    } else if (water) {
+      accel *= 0.08;
+      max = 3;
     }
+    if (ctrl.boost && v.kind !== 'boat') max *= 1.06;
+    const throttle = ctrl.axis.y;
+    if (throttle > 0.05) v.speed += accel * throttle * dt;
+    else if (throttle < -0.05) v.speed -= accel * 0.7 * dt;
+    else v.speed *= Math.pow(0.42, dt);
+    v.speed = clamp(v.speed, -max * 0.32, max);
+    const steer = ctrl.axis.x * (v.kind === 'bike' ? 2.15 : 1.65);
+    if (Math.abs(v.speed) > 0.4) v.yaw += steer * dt * clamp(v.speed, -10, 10) / 10;
+    v.roll = v.kind === 'bike' ? -ctrl.axis.x * Math.min(1, Math.abs(v.speed) / 12) * 0.45 : 0;
+    v.pitch = 0;
+    v.y = v.kind === 'boat' && water ? 0.18 + Math.sin(this.time * 2.2) * 0.05 : 0;
+    this.moveRide(v, dt, v.kind === 'boat' ? 'boat' : 'car');
+  }
+
+  updatePlane(v, dt, ctrl) {
+    if (ctrl.boost) v.throttle = Math.min(1, v.throttle + dt * 0.4);
+    if (ctrl.descend) v.throttle = Math.max(0, v.throttle - dt * 0.5);
+    v.pitch = clamp(v.pitch + ctrl.axis.y * dt * 0.85, -0.75, 0.85);
+    v.roll = clamp(v.roll + ctrl.axis.x * dt * 1.25, -1.05, 1.05);
+    if (Math.abs(ctrl.axis.x) < 0.08) v.roll *= Math.pow(0.18, dt);
+    if (Math.abs(ctrl.axis.y) < 0.08) v.pitch *= Math.pow(0.4, dt);
+    v.yaw += -v.roll * dt * 0.85;
+    const target = v.throttle * v.def.max;
+    v.speed += (target - v.speed) * Math.min(1, dt * 0.4);
+    const airborne = v.speed > 23 || v.y > 1.2;
+    if (!airborne) {
+      v.y = 0;
+      v.vy = 0;
+    } else {
+      const climb = Math.max(0, v.speed - 21) * 0.24 + v.pitch * 18;
+      v.y = Math.max(0, v.y + climb * dt);
+    }
+    this.moveRide(v, dt, v.y > 3 ? 'fly' : 'car');
+  }
+
+  updateHeli(v, dt, ctrl) {
+    const up = ctrl.boost || this.input.horn() || (this.script && this.time < this.script.until && this.script.boost);
+    if (up) v.collective = Math.min(1, v.collective + dt * 0.5);
+    if (ctrl.descend) v.collective = Math.max(0, v.collective - dt * 0.55);
+    const lift = (v.collective - 0.48) * 16;
+    v.vy += (lift - v.vy) * Math.min(1, dt * 2.2);
+    v.y += v.vy * dt;
+    if (v.y < 0.35) {
+      v.y = 0.35;
+      v.vy = Math.max(0, v.vy);
+    }
+    v.yaw += ctrl.axis.x * dt * 1.35;
+    v.pitch = THREE.MathUtils.lerp(v.pitch, -ctrl.axis.y * 0.4, Math.min(1, dt * 3));
+    v.roll = THREE.MathUtils.lerp(v.roll, ctrl.axis.x * 0.28, Math.min(1, dt * 3));
+    v.speed = ctrl.axis.y * 20;
+    const nx = v.x + Math.sin(v.yaw) * v.speed * dt;
+    const nz = v.z + Math.cos(v.yaw) * v.speed * dt;
+    const mode = v.y > 4 ? 'fly' : 'walk';
+    const next = this.world.slide(v.x, v.z, nx, nz, 1.4, mode);
+    v.x = next.x;
+    v.z = next.z;
+  }
+
+  moveRide(v, dt, mode) {
+    const nx = v.x + Math.sin(v.yaw) * v.speed * dt;
+    const nz = v.z + Math.cos(v.yaw) * v.speed * dt;
+    const radius = v.kind === 'bike' ? 0.55 : v.kind === 'plane' ? 1.6 : 1.2;
+    const next = this.world.slide(v.x, v.z, nx, nz, radius, mode);
+    if (Math.abs(v.speed) > 3 && next.x === v.x && next.z === v.z) v.speed *= 0.55;
+    v.x = next.x;
+    v.z = next.z;
   }
 
   updateTraffic(dt) {
-    for (const car of this.cars) {
-      if (!car.traffic || car === this.vehicle) continue;
-      car.speed = car.cruise;
-      const step = car.dir * car.speed * dt;
-      const nx = car.axis === 'x' ? car.x + step : car.x;
-      const nz = car.axis === 'z' ? car.z + step : car.z;
-      const edge =
-        car.axis === 'x'
-          ? nx < WORLD.minX + 12 || nx > WORLD.maxX - 12
-          : nz < WORLD.minZ + 12 || nz > 118;
-      if (edge || this.carBlocked(nx, nz, car, 1.15)) {
-        car.wait = (car.wait || 0) + dt;
-        if (car.wait > 0.45) {
-          car.dir *= -1;
-          car.wait = 0;
-        }
-      } else {
-        car.wait = 0;
-        car.x = nx;
-        car.z = nz;
+    const focus = this.focus();
+    for (const v of this.vehicles) {
+      if (!v.traffic || v === this.vehicle) continue;
+      const seg = this.world.roads[v.seg % this.world.roads.length];
+      if (!seg) continue;
+      const dx = seg.bx - seg.ax;
+      const dz = seg.bz - seg.az;
+      const len = Math.hypot(dx, dz) || 1;
+      v.speed = 9;
+      v.segT += v.dir * (v.speed * dt) / len;
+      if (v.segT > 1 || v.segT < 0) {
+        v.segT = clamp(v.segT, 0, 1);
+        v.dir *= -1;
+        if (this.rng() > 0.4) v.seg = (v.seg + 1 + Math.floor(this.rng() * 4)) % this.world.roads.length;
       }
-      if (car.axis === 'x') car.yaw = car.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
-      else car.yaw = car.dir > 0 ? 0 : Math.PI;
+      v.x = seg.ax + dx * v.segT;
+      v.z = seg.az + dz * v.segT;
+      v.yaw = Math.atan2(dx * v.dir, dz * v.dir);
+      v.y = 0;
+      if (Math.hypot(v.x - focus.x, v.z - focus.z) > 190) {
+        v.seg = Math.floor(this.rng() * this.world.roads.length);
+        v.segT = this.rng();
+        this.parkOnRoad(v);
+      }
     }
-  }
-
-  updatePeds(dt) {
-    const car = this.vehicle;
-    for (const ped of this.peds) {
-      if (ped.down > 0) {
-        ped.down -= dt;
-        ped.mesh.rotation.x = 1.15;
-        if (ped.down <= 0) {
-          ped.mesh.rotation.x = 0;
-          const spot = this.randomSidewalk();
-          ped.x = spot.x;
-          ped.z = spot.z;
-        }
-        ped.mesh.position.set(ped.x, 0, ped.z);
-        continue;
-      }
-      ped.x += Math.sin(ped.yaw) * ped.speed * dt;
-      ped.z += Math.cos(ped.yaw) * ped.speed * dt;
-      if (this.blocked(ped.x, ped.z, 0.35)) {
-        ped.x -= Math.sin(ped.yaw) * ped.speed * dt;
-        ped.z -= Math.cos(ped.yaw) * ped.speed * dt;
-        ped.yaw += Math.PI * (0.5 + Math.random() * 0.5);
-      } else if (Math.random() < dt * 0.35) {
-        ped.yaw += (Math.random() - 0.5) * 1.4;
-      }
-      ped.mesh.position.set(ped.x, 0, ped.z);
-      ped.mesh.rotation.y = ped.yaw;
-      const swing = Math.sin(this.time * 6 + ped.phase);
-      ped.mesh.userData.limbs.legL.rotation.x = swing * 0.6;
-      ped.mesh.userData.limbs.legR.rotation.x = -swing * 0.6;
-      if (car && Math.abs(car.speed) > 8 && dist2(car.x, car.z, ped.x, ped.z) < 1.7 * 1.7) {
-        ped.down = 3;
-        this.addWanted(1, '开车撞到了行人');
+    if (this.wanted >= 2 && !this.freezePolice) {
+      const car = this.vehicles.find((item) => item.police && item !== this.vehicle);
+      if (car) {
+        const dx = focus.x - car.x;
+        const dz = focus.z - car.z;
+        car.yaw = Math.atan2(dx, dz);
+        car.speed = 16;
+        this.moveRide(car, dt, 'car');
       }
     }
   }
 
-  updatePolice(dt) {
-    this.ensurePolice();
-    for (const car of this.police) {
-      const dx = this.player.x - car.x;
-      const dz = this.player.z - car.z;
-      const dist = Math.hypot(dx, dz) || 0.001;
-      if (this.freezePolice) {
-        car.mesh.position.set(car.x, 0, car.z);
+  updateNpcs(dt) {
+    const focus = this.focus();
+    for (const npc of this.npcs) {
+      if (npc.team === 'police' && !npc.active) {
+        npc.actor.model.visible = false;
         continue;
       }
-      if (dist + 0.8 < (car.bestDist || Infinity)) {
-        car.bestDist = dist;
-        car.stuck = 0;
-      } else car.stuck = (car.stuck || 0) + dt;
-      if (dist > 100 || (car.stuck > 4 && dist > 14 && dist < 42)) {
-        const spot = this.roadPoint(34, 62);
-        car.x = spot.x;
-        car.z = spot.z;
-        car.stuck = 0;
-        car.bestDist = Math.hypot(this.player.x - car.x, this.player.z - car.z);
+      if (npc.team === 'guard' && this.mission?.id !== 'harbor') {
+        npc.actor.model.visible = false;
+        continue;
       }
-      const desired = Math.atan2(dx, dz);
-      let chosen = desired;
-      const options = [0, 0.6, -0.6, 1.2, -1.2, 2.1, -2.1];
-      for (const off of options) {
-        const a = desired + off;
-        const ax = car.x + Math.sin(a) * 2.8;
-        const az = car.z + Math.cos(a) * 2.8;
-        if (!this.world.blocked(ax, az, 1.1)) {
-          chosen = a;
-          break;
+      const d = Math.hypot(npc.x - focus.x, npc.z - focus.z);
+      npc.actor.model.visible = d < 120;
+      if (!npc.alive) {
+        npc.down += dt;
+        npc.animLock = 5;
+        if (npc.down > 12 && npc.team === 'civ' && !npc.dummy) this.placeWalker(npc, Math.floor(this.rng() * 20));
+        if (npc.down > 12 && npc.team === 'civ' && !npc.dummy) {
+          npc.alive = true;
+          npc.hp = 100;
+          npc.state = 'walk';
+          npc.down = 0;
+          npc.animLock = 0;
+        }
+        continue;
+      }
+      if (d > 95) continue;
+      npc.animLock = Math.max(0, npc.animLock - dt);
+      npc.shootCd = Math.max(0, npc.shootCd - dt);
+      const hostile = npc.state === 'fight' || (npc.team !== 'civ' && d < 55);
+      if (npc.state === 'flee') {
+        npc.timer -= dt;
+        const away = Math.atan2(npc.x - focus.x, npc.z - focus.z);
+        this.stepNpc(npc, away, 5.2, dt);
+        if (npc.timer <= 0) npc.state = 'walk';
+      } else if (hostile && !this.freezePolice) {
+        const toward = Math.atan2(focus.x - npc.x, focus.z - npc.z);
+        npc.yaw = toward;
+        if (d > 12 && npc.armed) this.stepNpc(npc, toward, 4.4, dt);
+        else if (d > 2.1 && !npc.armed) this.stepNpc(npc, toward, 4.6, dt);
+        else npc.speed = 0;
+        if (npc.armed && d < 26 && npc.shootCd <= 0 && this.clearLos(npc.x, npc.z, focus.x, focus.z)) {
+          npc.shootCd = 0.95;
+          npc.actor.play('Shoot_OneHanded', { once: true, fade: 0.05 });
+          npc.animLock = 0.35;
+          this.spark(focus.x, 1.2, focus.z);
+          if (this.invuln <= 0 && d < 28) this.hurt(npc.team === 'police' ? 8 : 7);
+        } else if (!npc.armed && d < 2.05 && npc.shootCd <= 0) {
+          npc.shootCd = 0.7;
+          npc.actor.play('Punch', { once: true, fade: 0.05 });
+          npc.animLock = 0.4;
+          if (this.invuln <= 0) this.hurt(12);
+        }
+      } else if (npc.state !== 'fight') {
+        npc.timer -= dt;
+        const toward = Math.atan2(npc.tx - npc.x, npc.tz - npc.z);
+        this.stepNpc(npc, toward, 1.6, dt);
+        if (npc.timer <= 0 || Math.hypot(npc.tx - npc.x, npc.tz - npc.z) < 1.4) {
+          npc.tx = npc.x + (this.rng() - 0.5) * 24;
+          npc.tz = npc.z + (this.rng() - 0.5) * 24;
+          npc.timer = 3 + this.rng() * 4;
+        }
+        if (this.weapon !== 'fist' && d < 10 && this.rng() > 0.4 && npc.team === 'civ') {
+          npc.state = 'flee';
+          npc.timer = 4;
         }
       }
-      car.yaw += clamp(angNorm(chosen - car.yaw), -2.1 * dt, 2.1 * dt);
-      const max = 16 + this.wanted * 1.25;
-      car.speed = Math.min(max, (car.speed || 0) + 16 * dt);
-      const nx = car.x + Math.sin(car.yaw) * car.speed * dt;
-      const nz = car.z + Math.cos(car.yaw) * car.speed * dt;
-      if (!this.world.blocked(nx, nz, 1.15)) {
-        car.x = nx;
-        car.z = nz;
-      } else car.speed *= 0.4;
-      const flash = Math.sin(this.time * 14) > 0;
-      car.red.material.emissiveIntensity = flash ? 2.4 : 0.05;
-      car.blue.material.emissiveIntensity = flash ? 0.05 : 2.4;
+      if (npc.alive) locomotion(npc.actor, npc.speed, npc.animLock);
+    }
+  }
+
+  stepNpc(npc, yaw, speed, dt) {
+    npc.yaw = yaw;
+    npc.speed = speed;
+    const nx = npc.x + Math.sin(yaw) * speed * dt;
+    const nz = npc.z + Math.cos(yaw) * speed * dt;
+    const next = this.world.slide(npc.x, npc.z, nx, nz, 0.4, 'walk');
+    npc.x = next.x;
+    npc.z = next.z;
+  }
+
+  updateCombat(dt, ctrl) {
+    if (!ctrl.fire || this.downTimer > 0) return;
+    if (this.cooldown > 0 || this.reload > 0) return;
+    const spec = WEAPONS[this.weapon];
+    if (this.weapon !== 'fist') {
+      const mag = this.ammo[this.weapon];
+      if (mag.mag <= 0) {
+        this.startReload();
+        return;
+      }
+      mag.mag -= 1;
+      this.actor.play('Shoot_OneHanded', { once: true, fade: 0.04 });
+      this.animLock = 0.22;
+      this.audio.shot(this.weapon);
+      this.rayDamage(spec);
+    } else {
+      this.actor.play('Punch', { once: true, fade: 0.04 });
+      this.animLock = 0.42;
+      this.melee(spec);
+    }
+    this.cooldown = spec.cd;
+  }
+
+  rayDamage(spec) {
+    this.camera.updateMatrixWorld();
+    const origin = this.camera.position;
+    const dir = new THREE.Vector3();
+    this.camera.getWorldDirection(dir);
+    let best = null;
+    let bestT = spec.range;
+    for (const npc of this.npcs) {
+      if (!npc.alive || !npc.actor.model.visible) continue;
+      const ox = npc.x - origin.x;
+      const oy = 1.05 - origin.y;
+      const oz = npc.z - origin.z;
+      const b = ox * dir.x + oy * dir.y + oz * dir.z;
+      const c = ox * ox + oy * oy + oz * oz - 0.6 * 0.6;
+      const h = b * b - c;
+      if (h < 0) continue;
+      const t = b - Math.sqrt(h);
+      if (t > 0.6 && t < bestT) {
+        bestT = t;
+        best = npc;
+      }
+    }
+    const hit = origin.clone().addScaledVector(dir, Math.min(bestT, 12));
+    this.spark(hit.x, hit.y, hit.z);
+    if (!best) return;
+    if (!this.clearLos(origin.x, origin.z, best.x, best.z)) return;
+    this.damageNpc(best, spec.dmg);
+  }
+
+  melee(spec) {
+    const fx = Math.sin(this.player.yaw);
+    const fz = Math.cos(this.player.yaw);
+    let hit = false;
+    for (const npc of this.npcs) {
+      if (!npc.alive) continue;
+      const dx = npc.x - this.player.x;
+      const dz = npc.z - this.player.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > spec.range) continue;
+      const dot = (dx * fx + dz * fz) / (dist || 1);
+      if (dot < 0.2 && dist > 1.2) continue;
+      this.damageNpc(npc, spec.dmg);
+      this.spark(npc.x, 1.2, npc.z);
+      hit = true;
+    }
+    if (hit) this.audio.shot('fist');
+  }
+
+  damageNpc(npc, amount) {
+    npc.hp -= amount;
+    this.spark(npc.x, 1.3, npc.z);
+    const dead = npc.hp <= 0;
+    if (npc.team === 'civ' || npc.team === 'guard') {
+      if (this.combatWantedCd <= 0) {
+        this.addWanted(dead ? 2 : 1, dead ? '有人倒下了' : '动手了');
+        this.combatWantedCd = dead ? 1 : 2.2;
+      }
+    }
+    if (dead) {
+      npc.alive = false;
+      npc.down = 0;
+      npc.hp = 0;
+      npc.actor.play('Death', { once: true, hold: true, fade: 0.05 });
+      npc.animLock = 8;
+      if (npc.team === 'police') this.player.armor = Math.min(100, this.player.armor + 15);
+      return;
+    }
+    npc.actor.play('RecieveHit', { once: true, fade: 0.04 });
+    npc.animLock = 0.35;
+    if (npc.team === 'civ') {
+      npc.state = npc.brave ? 'fight' : 'flee';
+      npc.timer = 5;
+      npc.armed = false;
+    }
+  }
+
+  startReload() {
+    if (this.weapon === 'fist' || this.reload > 0) return;
+    const mag = this.ammo[this.weapon];
+    const size = WEAPONS[this.weapon].mag;
+    if (mag.mag >= size || mag.res <= 0) return;
+    this.reload = this.weapon === 'rifle' ? 1.5 : 1.05;
+    const need = size - mag.mag;
+    const take = Math.min(need, mag.res);
+    mag.mag += take;
+    mag.res -= take;
+    this.ui.toast(this.weapon === 'rifle' ? '步枪换弹' : '手枪换弹');
+  }
+
+  hurt(amount) {
+    if (this.invuln > 0 || this.downTimer > 0 || this.player.hp <= 0) return;
+    let left = amount;
+    if (this.player.armor > 0) {
+      const soak = Math.min(this.player.armor, left * 0.65);
+      this.player.armor -= soak;
+      left -= soak;
+    }
+    this.player.hp = Math.max(0, this.player.hp - left);
+    this.ui.flashHurt();
+    this.actor.play('RecieveHit', { once: true, fade: 0.04 });
+    this.animLock = 0.25;
+    if (this.player.hp <= 0) {
+      this.player.hp = 0;
+      this.downTimer = 1.15;
+      this.actor.play('Death', { once: true, hold: true, fade: 0.05 });
+      this.audio.fail();
+      this.ui.toast('你倒下了');
+    }
+  }
+
+  respawn() {
+    const fine = Math.min(this.usd, Math.max(100, this.usd * 0.12));
+    this.usd -= fine;
+    this.walletSig = '';
+    this.player.hp = 100;
+    this.player.armor = Math.max(this.player.armor, 10);
+    this.wanted = Math.max(0, this.wanted - 2);
+    this.invuln = 2.5;
+    this.downTimer = 0;
+    this.ammo.pistol.mag = WEAPONS.pistol.mag;
+    this.ammo.rifle.mag = WEAPONS.rifle.mag;
+    if (this.vehicle) this.exitVehicle();
+    this.teleport(SPOTS.hospital.x, SPOTS.hospital.z, 0);
+    this.ensurePolice(true);
+    const failed = this.mission && ['sec', 'rug', 'harbor'].includes(this.mission.id);
+    if (failed) this.failMission('送到医院，任务失败');
+    this.ui.toast(`橙子医院把你捞回来了，账单 ${fmtUsd(fine)}`);
+    this.actor.play('Idle', { fade: 0.05 });
+    this.animLock = 0;
+  }
+
+  clearLos(ax, az, bx, bz) {
+    const steps = 7;
+    for (let i = 1; i < steps; i += 1) {
+      const t = i / steps;
+      const x = ax + (bx - ax) * t;
+      const z = az + (bz - az) * t;
+      if (this.world.blocked(x, z, 0.2, 'walk')) return false;
+    }
+    return true;
+  }
+
+  spark(x, y, z) {
+    const spark = this.sparks.find((item) => item.life <= 0) || this.sparks[0];
+    spark.life = 0.16;
+    spark.mesh.visible = true;
+    spark.mesh.position.set(x, y, z);
+  }
+
+  updateSparks(dt) {
+    for (const spark of this.sparks) {
+      if (spark.life <= 0) continue;
+      spark.life -= dt;
+      spark.mesh.scale.setScalar(1 + (0.16 - spark.life) * 6);
+      if (spark.life <= 0) spark.mesh.visible = false;
     }
   }
 
   updateWanted(dt) {
+    this.ensurePolice(false);
     let nearest = Infinity;
-    for (const car of this.police) {
-      nearest = Math.min(nearest, Math.hypot(car.x - this.player.x, car.z - this.player.z));
+    for (const cop of this.police) {
+      if (!cop.active || !cop.alive) continue;
+      nearest = Math.min(nearest, Math.hypot(cop.x - this.player.x, cop.z - this.player.z));
     }
+    const need = this.ownedProps.size ? 3.5 : 6;
     if (this.wanted > 0 && nearest > 54) this.wantedTimer += dt;
     else this.wantedTimer = 0;
-    const need = this.ownedProps.size > 0 ? 3.5 : 6;
     if (this.wanted > 0 && this.wantedTimer >= need) {
       this.wanted -= 1;
       this.wantedTimer = 0;
-      this.ensurePolice();
       if (this.wanted === 0) this.ui.toast('通缉解除');
     }
-    const speed = this.vehicle ? Math.abs(this.vehicle.speed) : this.player.walking ? 6 : 0;
-    if (this.wanted > 0 && nearest < 3.25 && speed < 5.5) this.bustTimer += dt;
+    const speed = this.vehicle ? Math.abs(this.vehicle.speed) : this.player.speed;
+    const airborne = this.vehicle && this.vehicle.y > 3;
+    if (this.wanted > 0 && nearest < 2.7 && speed < 4 && !airborne) this.bustTimer += dt;
     else this.bustTimer = Math.max(0, this.bustTimer - dt);
     if (this.bustTimer > 1.55) this.bust();
     if (this.mission?.id === 'sec' && this.wanted === 0) this.completeMission();
   }
 
-  updateCoins() {
-    for (const coin of this.coins) {
-      if (coin.got) continue;
-      coin.mesh.position.y = 0.85 + Math.sin(this.time * 2.2 + coin.phase) * 0.12;
-      coin.mesh.rotation.y = this.time * 1.6 + coin.phase;
-      if (dist2(coin.x, coin.z, this.player.x, this.player.z) < 1.45 * 1.45) {
-        coin.got = true;
-        coin.mesh.visible = false;
-        this.collected.add(coin.id);
-        this.bal[coin.drop.id] += coin.drop.amt;
-        this.audio.coin();
-        this.ui.toast(`捡到 ${fmtNum(coin.drop.amt, COINS.find((c) => c.id === coin.drop.id).dec)} ${coin.drop.id}`);
-        this.walletSig = '';
+  ensurePolice(forcePlace) {
+    const need = this.wanted === 0 ? 0 : Math.min(4, this.wanted);
+    const focus = this.focus();
+    this.police.forEach((cop, index) => {
+      const active = index < need;
+      if (!active) {
+        cop.active = false;
+        cop.placed = false;
+        return;
       }
-    }
-    if (!this.coinSweep && this.collected.size >= this.coins.length) {
-      this.coinSweep = true;
-      this.ui.toast('街上的币捡完了');
-    }
+      cop.active = true;
+      if (!cop.alive && cop.down > 5) cop.placed = false;
+      const dist = Math.hypot(cop.x - focus.x, cop.z - focus.z);
+      if (!cop.placed || forcePlace || (!this.freezePolice && dist > 110)) {
+        const ang = this.rng() * Math.PI * 2;
+        const distOut = 32 + this.rng() * 10;
+        cop.x = focus.x + Math.cos(ang) * distOut;
+        cop.z = focus.z + Math.sin(ang) * distOut;
+        if (this.world.blocked(cop.x, cop.z, 0.4, 'walk') || inWater(cop.x, cop.z)) {
+          cop.x = focus.x + 28;
+          cop.z = focus.z;
+        }
+        cop.placed = true;
+        cop.alive = true;
+        cop.hp = 80;
+        cop.down = 0;
+      }
+    });
+  }
+
+  bust() {
+    this.bustTimer = 0;
+    this.wanted = 0;
+    const fine = Math.min(this.usd, Math.max(150, this.usd * 0.12));
+    this.usd -= fine;
+    this.walletSig = '';
+    if (this.vehicle) this.exitVehicle();
+    this.teleport(SPOTS.safehouse.x + 6, SPOTS.safehouse.z, 0);
+    this.ensurePolice(true);
+    const failed = this.mission && (this.mission.id === 'sec' || this.mission.id === 'rug');
+    if (failed) this.failMission('被 SEC 约谈，任务失败');
+    this.audio.fail();
+    this.ui.toast(`约谈结束，罚款 ${fmtUsd(fine)}`);
+  }
+
+  addWanted(amount, reason) {
+    const next = clamp(this.wanted + amount, 0, 5);
+    if (next === this.wanted) return;
+    this.wanted = next;
+    this.wantedTimer = 0;
+    this.ensurePolice(false);
+    if (reason) this.ui.toast(`${reason} · ${this.wanted} 星`);
   }
 
   updateMission(dt) {
     const mission = this.mission;
     this.bags.forEach((bag, i) => {
-      const show = mission?.id === 'rug' && mission.phase === 'loot' && !mission.got[i];
-      bag.visible = show;
+      bag.visible = mission?.id === 'rug' && mission.phase === 'loot' && !mission.got[i];
       bag.rotation.y = this.time;
     });
     this.caseMesh.visible = mission?.id === 'cold' && mission.phase === 'pickup';
+    if (this.caseMesh.visible) this.caseMesh.position.set(SPOTS.coldPickup.x, 0.4, SPOTS.coldPickup.z);
+    this.rings.forEach((ring, i) => {
+      ring.visible = mission?.id === 'sky' && mission.phase === 'gates' && i >= mission.gate;
+      ring.rotation.y = this.time * 0.4;
+    });
     if (!mission) {
       this.beacon.visible = false;
-      this.missionTarget = null;
+      if (this.objectiveSig !== 'idle') {
+        this.objectiveSig = 'idle';
+        this.ui.setObjective('收集硬币，按 M 接任务。市中心有橙子交易所。');
+      }
       return;
     }
+    const here = this.focus();
     let target = null;
     let text = '';
     if (mission.id === 'cold') {
@@ -674,15 +1129,15 @@ export class Game {
       }
       if (mission.phase === 'pickup') {
         target = SPOTS.coldPickup;
-        text = `冷钱包专送 · 去北码头取货 · ${Math.ceil(mission.time)}s`;
-        if (dist2(this.player.x, this.player.z, target.x, target.z) < target.r * target.r) {
+        text = `冷钱包专送 · 去港口取货 · ${Math.ceil(mission.time)}s`;
+        if (dist2(here.x, here.z, target.x, target.z) < target.r * target.r) {
           mission.phase = 'deliver';
           this.ui.toast('拿到冷钱包，送到海滩公寓');
         }
       } else {
         target = SPOTS.coldDrop;
         text = `冷钱包专送 · 送到海滩公寓 · ${Math.ceil(mission.time)}s`;
-        if (dist2(this.player.x, this.player.z, target.x, target.z) < target.r * target.r) {
+        if (dist2(here.x, here.z, target.x, target.z) < target.r * target.r) {
           this.completeMission();
           return;
         }
@@ -717,27 +1172,75 @@ export class Game {
         mission.got.forEach((flag, i) => {
           if (flag) return;
           const spot = SPOTS.loot[i];
-          if (dist2(this.player.x, this.player.z, spot.x, spot.z) < 3.1 * 3.1) mission.got[i] = true;
+          if (dist2(here.x, here.z, spot.x, spot.z) < 3.2 * 3.2) mission.got[i] = true;
         });
         if (mission.got.every(Boolean)) {
           mission.phase = 'escape';
           this.wanted = Math.max(this.wanted, 4);
-          this.ensurePolice();
+          this.ensurePolice(true);
           this.ui.toast('袋子齐了，回安全屋');
         }
       } else {
         target = SPOTS.safehouse;
         text = 'Rug Pull · 逃回橙子安全屋';
-        if (dist2(this.player.x, this.player.z, target.x, target.z) < target.r * target.r) {
+        if (dist2(here.x, here.z, target.x, target.z) < target.r * target.r) {
+          this.completeMission();
+          return;
+        }
+      }
+    } else if (mission.id === 'sky') {
+      if (mission.phase === 'board') {
+        target = SPOTS.airport;
+        text = '航线投送 · 到机场登上轻航';
+        if (this.vehicle?.kind === 'plane') {
+          mission.phase = 'gates';
+          mission.gate = 0;
+          this.ui.toast('拉满油门，穿过三道橙环');
+        }
+      } else {
+        const gate = GATES[mission.gate];
+        target = gate;
+        text = `航线投送 · 穿过橙环 ${mission.gate + 1}/3`;
+        if (this.vehicle?.kind === 'plane' && here.y > 8) {
+          const d = Math.hypot(here.x - gate.x, here.y - gate.y, here.z - gate.z);
+          if (d < 16) {
+            mission.gate += 1;
+            this.ui.toast(`橙环 ${mission.gate}/3`);
+            if (mission.gate >= GATES.length) {
+              this.completeMission();
+              return;
+            }
+          }
+        }
+      }
+    } else if (mission.id === 'harbor') {
+      if (mission.phase === 'go') {
+        target = SPOTS.marina;
+        text = '港口清场 · 前往码头';
+        if (dist2(here.x, here.z, target.x, target.z) < target.r * target.r) {
+          mission.phase = 'clear';
+          this.spawnGuards();
+          this.ui.toast('护卫在码头上');
+        }
+      } else if (mission.phase === 'clear') {
+        const left = this.guards.filter((npc) => npc.alive).length;
+        text = `港口清场 · 剩余护卫 ${left}`;
+        if (left === 0 && this.guards.length) {
+          mission.phase = 'lift';
+          this.ui.toast('上去，把直升机拉高');
+        }
+      } else {
+        target = SPOTS.marina;
+        text = '港口清场 · 直升机拉到 12 米以上';
+        if (this.vehicle?.kind === 'heli' && here.y > 12) {
           this.completeMission();
           return;
         }
       }
     }
-    this.missionTarget = target;
     this.beacon.visible = !!target;
     if (target) {
-      this.beacon.position.set(target.x, 0, target.z);
+      this.beacon.position.set(target.x, (target.y || 0) + 2.6, target.z);
       this.beacon.rotation.y = this.time;
     }
     if (text !== this.objectiveSig) {
@@ -746,69 +1249,184 @@ export class Game {
     }
   }
 
-  updateCamera() {
-    const focusX = this.player.x;
-    const focusZ = this.player.z;
-    const pitch = this.camPitch;
-    const yaw = this.camYaw;
-    let dist = this.vehicle ? Math.max(8.5, this.camDist + 2) : this.camDist;
-    const cp = Math.cos(pitch);
-    const sp = Math.sin(pitch);
-    const sy = Math.sin(yaw);
-    const cy = Math.cos(yaw);
-    let cx = 0;
-    let cz = 0;
-    for (let i = 0; i < 5; i += 1) {
-      cx = focusX - sy * cp * dist;
-      cz = focusZ - cy * cp * dist;
-      if (!this.world.blocked(cx, cz, 0.35)) break;
-      dist *= 0.72;
+  spawnGuards() {
+    this.guards.forEach((npc) => {
+      npc.alive = false;
+      npc.actor.model.visible = false;
+    });
+    this.guards = [];
+    GUARD_SPOTS.forEach((spot) => {
+      const npc = this.makeNpc('worker');
+      npc.team = 'guard';
+      npc.armed = true;
+      npc.state = 'fight';
+      npc.hp = 70;
+      npc.x = spot.x;
+      npc.z = spot.z;
+      this.npcs.push(npc);
+      this.guards.push(npc);
+    });
+  }
+
+  updateCoins() {
+    const here = this.focus();
+    for (const coin of this.coins) {
+      const got = this.collected.has(coin.id);
+      coin.mesh.visible = !got;
+      if (got) continue;
+      coin.mesh.position.set(coin.x, 0.8 + Math.sin(this.time * 2 + coin.x) * 0.15, coin.z);
+      coin.mesh.rotation.z = this.time;
+      if (!this.vehicle && dist2(here.x, here.z, coin.x, coin.z) < 1.6 * 1.6) {
+        this.collected.add(coin.id);
+        this.bal[coin.drop.id] += coin.drop.amt;
+        this.audio.coin();
+        const meta = COINS.find((c) => c.id === coin.drop.id);
+        this.ui.toast(`捡到 ${fmtNum(coin.drop.amt, meta.dec)} ${coin.drop.id}`);
+        this.walletSig = '';
+      }
     }
-    const cyPos = 1.5 - sp * dist;
-    this.camera.position.set(cx, Math.max(0.6, cyPos), cz);
-    this.camera.lookAt(focusX, 1.35, focusZ);
+  }
+
+  syncActors(dt) {
+    const step = this.mode === 'play' ? dt : 0;
+    if (this.vehicle) {
+      const sink = this.vehicle.kind === 'car' ? -0.55 : 0;
+      this.actor.model.position.set(0, this.vehicle.def.seat + sink, 0.05);
+      this.actor.model.rotation.set(0, 0, 0);
+      if (this.animLock <= 0 && this.actor.current !== 'SitDown' && this.actor.current !== 'Death') {
+        this.actor.play('SitDown', { once: true, hold: true });
+      }
+    } else {
+      if (this.actor.model.parent !== this.scene) this.scene.add(this.actor.model);
+      this.actor.model.position.set(this.player.x, 0, this.player.z);
+      this.actor.model.rotation.set(0, this.player.yaw, 0);
+      if (this.downTimer <= 0) locomotion(this.actor, this.player.speed, this.animLock);
+    }
+    this.gun.visible = !this.vehicle && this.weapon === 'pistol';
+    this.rifle.visible = !this.vehicle && this.weapon === 'rifle';
+    this.actor.mixer.update(step);
+    for (const npc of this.npcs) {
+      if (!npc.actor.model.visible) continue;
+      npc.actor.model.position.set(npc.x, 0, npc.z);
+      npc.actor.model.rotation.y = npc.yaw;
+      npc.actor.mixer.update(step);
+    }
+    for (const v of this.vehicles) {
+      const far = Math.hypot(v.x - this.player.x, v.z - this.player.z) > 220 && v !== this.vehicle;
+      v.mesh.visible = !far;
+      if (far) continue;
+      this.syncRide(v, step);
+    }
+  }
+
+  syncRide(v, dt) {
+    v.mesh.position.set(v.x, v.y, v.z);
+    v.mesh.rotation.order = 'YXZ';
+    v.mesh.rotation.set(v.pitch || 0, v.yaw, v.roll || 0);
+    if (dt) spinParts(v, dt);
+  }
+
+  focus() {
+    if (this.vehicle) return { x: this.vehicle.x, y: this.vehicle.y, z: this.vehicle.z };
+    return { x: this.player.x, y: this.player.y, z: this.player.z };
+  }
+
+  focusAt(x, y, z) {
+    this.player.x = x;
+    this.player.y = y;
+    this.player.z = z;
+  }
+
+  updateCamera(wall) {
+    const look = this.input.consumeLook();
+    if (this.mode === 'play') {
+      this.camYaw -= look.x * 0.0022;
+      this.camPitch = clamp(this.camPitch - look.y * 0.0016, -0.35, 1.05);
+      this.camDist = clamp(this.camDist + look.wheel * 0.55, 4.2, 18);
+    }
+    const focus = this.focus();
+    if (this.vehicle && this.mode === 'play') {
+      this.camYaw += angNorm(this.vehicle.yaw - this.camYaw) * Math.min(1, wall * 2.4);
+    }
+    let dist = this.camDist;
+    if (this.vehicle?.kind === 'plane') dist = Math.max(dist, 14);
+    else if (this.vehicle?.kind === 'heli') dist = Math.max(dist, 11);
+    else if (this.vehicle) dist = Math.max(dist, 8);
+    const cp = Math.cos(this.camPitch);
+    const sp = Math.sin(this.camPitch);
+    let cx = focus.x - Math.sin(this.camYaw) * cp * dist;
+    let cz = focus.z - Math.cos(this.camYaw) * cp * dist;
+    let cy = focus.y + 1.6 - sp * dist;
+    if (cy < 0.45) cy = 0.45;
+    this.camera.position.set(cx, cy, cz);
+    this.camera.lookAt(focus.x, focus.y + 1.25, focus.z);
+    this.sky.position.copy(this.camera.position);
+  }
+
+  updateTod(wall) {
+    if (this.mode === 'play') this.tod = (this.tod + wall * 0.004) % 1;
+    const elev = Math.sin(this.tod * Math.PI);
+    const az = this.tod * Math.PI * 2;
+    const day = clamp(elev, 0, 1);
+    const focus = this.focus();
+    this.sun.intensity = 0.18 + day * 2.35;
+    this.hemi.intensity = 0.22 + day * 0.5;
+    this.sun.position.set(focus.x + Math.cos(az) * 70, 10 + Math.max(0.15, elev) * 80, focus.z + Math.sin(az) * 36);
+    this.sun.target.position.set(focus.x, 0, focus.z);
+    this.sun.shadow.camera.updateProjectionMatrix();
+    const horizon = new THREE.Color().setHSL(0.08, 0.5, 0.22 + day * 0.42);
+    const top = new THREE.Color().setHSL(0.57, 0.55, 0.08 + day * 0.42);
+    this.sky.material.uniforms.uTop.value.copy(top);
+    this.sky.material.uniforms.uHorizon.value.copy(horizon);
+    this.sky.material.uniforms.uSun.value.set(Math.cos(az), Math.max(0.05, elev), Math.sin(az) * 0.6);
+    this.scene.fog.color.copy(horizon);
   }
 
   updateHud(dt) {
+    const prices = getPrices();
     const sig = `${this.usd.toFixed(0)}|${COINS.map((c) => this.bal[c.id].toFixed(4)).join(',')}|${getOrngMult()}`;
     if (sig !== this.walletSig) {
       this.walletSig = sig;
-      const prices = getPrices();
       let net = this.usd;
       for (const coin of COINS) net += this.bal[coin.id] * prices[coin.id];
       this.ui.setWallet({ usd: this.usd, bal: this.bal, net });
-    }
-    if (!this.mission && this.objectiveSig !== 'idle') {
-      this.objectiveSig = 'idle';
-      this.ui.setObjective('收集硬币，按 M 接任务。市中心有橙子交易所。');
     }
     if (this.wanted !== this.starSig) {
       this.starSig = this.wanted;
       this.ui.setStars(this.wanted);
     }
-    const prompt = this.currentPrompt();
+    const weapon = WEAPONS[this.weapon];
+    const ammo = this.weapon === 'fist' ? '近战' : `${this.ammo[this.weapon].mag}/${this.ammo[this.weapon].res}`;
+    this.ui.setVitals(this.player.hp, this.player.armor, `${weapon.name} ${ammo}`);
+    this.ui.setCrosshair(this.mode === 'play' && this.weapon !== 'fist');
+    const prompt = this.mode === 'play' ? this.currentPrompt() : '';
     if (prompt !== this.promptSig) {
       this.promptSig = prompt;
       this.ui.setPrompt(prompt);
     }
-    this.ui.setSpeed(this.vehicle ? `${Math.round(Math.abs(this.vehicle.speed) * 3.6)} km/h` : '');
+    const speed = this.vehicle ? Math.abs(this.vehicle.speed) : 0;
+    const extra = this.vehicle?.kind === 'plane' || this.vehicle?.kind === 'heli' ? ` · ${Math.round(this.vehicle.y)} m` : '';
+    this.ui.setSpeed(this.vehicle ? `${Math.round(speed * 3.6)} km/h${extra}` : '');
     this.drawMinimap();
     this.headlineTimer += dt;
     if (this.headlineTimer > 14) {
       this.headlineTimer = 0;
       this.ui.setHeadline();
     }
+    this.audio.setSiren(this.mode === 'play' ? this.wanted : 0);
+    this.audio.setEngine(this.mode === 'play' && this.vehicle ? Math.abs(this.vehicle.speed) : 0);
   }
 
   currentPrompt() {
     const bits = [];
     if (!this.vehicle) {
-      const car = this.nearestCar();
-      if (car) {
-        if (car.defId && !this.ownedCars.has(car.defId)) bits.push('这辆还没买 · 去车行');
-        else bits.push('按 F 上车');
-      }
-    } else bits.push('按 F 下车');
+      const car = this.nearestVehicle();
+      if (car) bits.push(`按 F 进入${car.def.name}`);
+    } else if (this.vehicle.y > 3) bits.push('按住 Shift / Ctrl 控制高度，降落后再按 F');
+    else bits.push('按 F 下车');
+    if (this.vehicle?.kind === 'plane') bits.push('Shift 油门，W/S 俯仰，A/D 滚转');
+    if (this.vehicle?.kind === 'heli') bits.push('Shift 或空格上升，Ctrl 下降');
+    if (this.vehicle?.kind === 'boat' && !inWater(this.vehicle.x, this.vehicle.z)) bits.push('快艇离开水面几乎不动');
     const here = this.nearestSpot();
     if (here) bits.push(here.prompt);
     if (this.mission?.id === 'pump' && this.mission.phase === 'goto') {
@@ -824,16 +1442,33 @@ export class Game {
       { ...SPOTS.kiosk, prompt: '按 E 任务终端' },
       { ...SPOTS.dealer, prompt: '按 E 车行' },
       { ...SPOTS.safehouse, prompt: '按 E 在安全屋存档' },
-      { ...PROPS[0], r: 4.2, prompt: '按 E 看海滩公寓' },
-      { ...PROPS[1], r: 4.2, prompt: '按 E 看霓虹阁楼' },
+      { ...PROPS[0], r: 5, prompt: '按 E 看海滩公寓' },
+      { ...PROPS[1], r: 5, prompt: '按 E 看霓虹阁楼' },
     ];
     let best = null;
     let bestD = Infinity;
+    const here = this.focus();
     for (const spot of spots) {
-      const d = dist2(this.player.x, this.player.z, spot.x, spot.z);
-      const r = spot.r || 4;
+      const d = dist2(here.x, here.z, spot.x, spot.z);
+      const r = spot.r || 4.5;
       if (d < r * r && d < bestD) {
         best = spot;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+
+  nearestVehicle() {
+    let best = null;
+    let bestD = Infinity;
+    const here = this.focus();
+    for (const v of this.vehicles) {
+      if (v === this.vehicle) continue;
+      const reach = v.kind === 'plane' || v.kind === 'heli' ? 9 : v.kind === 'boat' ? 7 : 4.8;
+      const d = Math.hypot(v.x - here.x, v.z - here.z);
+      if (d < reach && d < bestD) {
+        best = v;
         bestD = d;
       }
     }
@@ -855,7 +1490,7 @@ export class Game {
     }
     const spot = this.nearestSpot();
     if (!spot) return;
-    if (spot.name === '橙子交易所' || spot.x === SPOTS.exchange.x && spot.z === SPOTS.exchange.z) {
+    if (spot.x === SPOTS.exchange.x && spot.z === SPOTS.exchange.z) {
       this.openModal('exchange');
       return;
     }
@@ -872,9 +1507,8 @@ export class Game {
       this.ui.toast('安全屋已存档');
       return;
     }
-    const prop = PROPS.find((p) => p.x === spot.x && p.z === spot.z);
+    const prop = PROPS.find((item) => item.x === spot.x && item.z === spot.z);
     if (prop) {
-      this.suppressLock = true;
       this.mode = 'modal';
       this.input.exitLock();
       this.ui.openShop({
@@ -884,60 +1518,70 @@ export class Game {
         prices: getPrices(),
         items: [{ ...prop, owned: this.ownedProps.has(prop.id) }],
       });
-      setTimeout(() => {
-        this.suppressLock = false;
-      }, 0);
     }
   }
 
   toggleVehicle() {
     if (this.vehicle) {
-      const car = this.vehicle;
-      const side = car.yaw + Math.PI / 2;
-      let x = car.x + Math.sin(side) * 2.3;
-      let z = car.z + Math.cos(side) * 2.3;
-      if (this.blocked(x, z, 0.45)) {
-        x = car.x - Math.sin(side) * 2.3;
-        z = car.z - Math.cos(side) * 2.3;
+      if (this.vehicle.y > 2.5) {
+        this.ui.toast('先降落再下车');
+        return;
       }
-      this.player.x = x;
-      this.player.z = z;
-      this.player.yaw = car.yaw;
-      this.player.mesh.visible = true;
-      this.player.mesh.position.set(x, 0, z);
-      this.vehicle = null;
-      car.speed = 0;
+      this.exitVehicle();
       return;
     }
-    const car = this.nearestCar();
+    const car = this.nearestVehicle();
     if (!car) return;
-    if (car.defId && !this.ownedCars.has(car.defId)) {
-      this.ui.toast(`${car.name} 还停在车行账上`);
-      return;
+    const owned = car.personal && this.ownedCars.has(car.id);
+    if (!owned && !car.hotwired) {
+      const waived = (this.mission?.id === 'sky' && car.kind === 'plane') || (this.mission?.id === 'harbor' && car.kind === 'heli');
+      if (!waived) this.addWanted(1, `征用${car.def.name}`);
+      car.hotwired = true;
     }
     if (car.traffic) {
       car.traffic = false;
-      car.stolen = true;
-      this.addWanted(1, '征用了一辆车');
-      this.spawnTraffic(1);
+      this.makeVehicle(['sedan', 'taxi', 'suv'][Math.floor(this.rng() * 3)], 0, 0, 0, { traffic: true });
     }
     this.vehicle = car;
-    this.player.mesh.visible = false;
+    car.mesh.add(this.actor.model);
+    this.actor.play('SitDown', { once: true, hold: true, fade: 0.1 });
     this.camYaw = car.yaw;
+    this.audio.resume();
   }
 
-  nearestCar() {
-    let best = null;
-    let bestD = 4.8 * 4.8;
-    for (const car of this.cars) {
-      if (car.police) continue;
-      const d = dist2(car.x, car.z, this.player.x, this.player.z);
-      if (d < bestD) {
-        best = car;
-        bestD = d;
-      }
+  exitVehicle() {
+    const car = this.vehicle;
+    if (!car) return;
+    const side = car.yaw + Math.PI / 2;
+    let x = car.x + Math.sin(side) * 2.4;
+    let z = car.z + Math.cos(side) * 2.4;
+    if (this.world.blocked(x, z, 0.4, 'walk')) {
+      x = car.x - Math.sin(side) * 2.4;
+      z = car.z - Math.cos(side) * 2.4;
     }
-    return best;
+    this.scene.add(this.actor.model);
+    this.player.x = x;
+    this.player.z = z;
+    this.player.y = 0;
+    this.player.yaw = car.yaw;
+    car.speed = 0;
+    this.vehicle = null;
+    this.actor.play('Idle', { fade: 0.1 });
+  }
+
+  teleport(x, z, y = null) {
+    if (this.vehicle) {
+      this.vehicle.x = x;
+      this.vehicle.z = z;
+      if (y != null) this.vehicle.y = y;
+      this.player.x = x;
+      this.player.z = z;
+      this.player.y = this.vehicle.y;
+      return;
+    }
+    this.player.x = x;
+    this.player.z = z;
+    if (y != null) this.player.y = y;
   }
 
   trade(id, side, amount) {
@@ -978,12 +1622,16 @@ export class Game {
   }
 
   buy(id, payWith) {
-    const car = CARS.find((c) => c.id === id);
-    const prop = PROPS.find((p) => p.id === id);
+    const car = VEHICLES.find((item) => item.id === id && !item.unsold);
+    const prop = PROPS.find((item) => item.id === id);
     const item = car || prop;
-    if (!item || item.price <= 0) return;
+    if (!item) return;
     if ((car && this.ownedCars.has(id)) || (prop && this.ownedProps.has(id))) return;
     const price = item.price;
+    if (price <= 0) {
+      this.ownedCars.add(id);
+      return;
+    }
     if (payWith === 'USD') {
       if (this.usd < price) {
         this.ui.toast('现金不够');
@@ -1012,11 +1660,14 @@ export class Game {
       this.ui.toast('先完成或放弃当前任务');
       return;
     }
-    if (id === 'cold') this.mission = { id, phase: 'pickup', time: 80 };
+    if (this.done.has(id)) {
+      /* 可以重做已经完成的单 */
+    }
+    if (id === 'cold') this.mission = { id, phase: 'pickup', time: 110 };
     if (id === 'sec') {
       this.mission = { id, phase: 'escape' };
       this.wanted = Math.max(this.wanted, 3);
-      this.ensurePolice();
+      this.ensurePolice(true);
     }
     if (id === 'pump') {
       if (this.bal.ORNG < 4000) {
@@ -1028,8 +1679,11 @@ export class Game {
     if (id === 'rug') {
       this.mission = { id, phase: 'loot', got: [false, false, false] };
       this.wanted = Math.max(this.wanted, 2);
-      this.ensurePolice();
+      this.ensurePolice(true);
     }
+    if (id === 'sky') this.mission = { id, phase: 'board', gate: 0 };
+    if (id === 'harbor') this.mission = { id, phase: 'go' };
+    if (!this.mission) return;
     this.objectiveSig = '';
     this.ui.toast(`已接受：${missionName(id)}`);
     this.audio.buy();
@@ -1040,6 +1694,9 @@ export class Game {
   abandonMission() {
     if (!this.mission) return;
     if (this.mission.id === 'pump') setOrngMult(1);
+    if (this.mission.id === 'harbor') {
+      for (const npc of this.guards) npc.alive = false;
+    }
     this.ui.toast(`已放弃 ${missionName(this.mission.id)}`);
     this.mission = null;
     this.objectiveSig = '';
@@ -1061,13 +1718,15 @@ export class Game {
       setOrngMult(1);
     }
     if (mission.id === 'rug') this.bal.BTC += 0.015;
+    if (mission.id === 'sky') this.bal.BTC += 0.02;
+    if (mission.id === 'harbor') this.bal.SOL += 5;
     this.done.add(mission.id);
     this.mission = null;
     this.objectiveSig = '';
     this.walletSig = '';
     this.audio.success();
     this.ui.toast(`任务完成：${missionName(mission.id)}`);
-    if (this.done.size >= 4) this.ui.toast('四单都做完了。海边的霓虹还亮着。');
+    if (this.done.size >= MISSIONS.length) this.ui.toast('六单都做完了。海边的霓虹还亮着。');
     this.pushPrices();
     if (this.ui.modalOpen()) this.closeModal();
     this.save();
@@ -1075,6 +1734,9 @@ export class Game {
 
   failMission(reason) {
     if (this.mission?.id === 'pump') setOrngMult(1);
+    if (this.mission?.id === 'harbor') {
+      for (const npc of this.guards) npc.alive = false;
+    }
     this.mission = null;
     this.objectiveSig = '';
     this.audio.fail();
@@ -1083,56 +1745,34 @@ export class Game {
     this.save();
   }
 
-  bust() {
-    this.bustTimer = 0;
-    this.wanted = 0;
-    this.ensurePolice();
-    const fine = Math.min(this.usd, Math.max(150, this.usd * 0.12));
-    this.usd -= fine;
-    this.walletSig = '';
-    if (this.vehicle) {
-      this.vehicle.speed = 0;
-      this.player.mesh.visible = true;
-      this.vehicle = null;
+  openModal(kind) {
+    this.mode = 'modal';
+    this.input.exitLock();
+    if (kind === 'exchange') this.ui.openExchange(this.marketModel());
+    if (kind === 'missions') {
+      this.ui.openMissions({
+        active: this.mission?.id || '',
+        activeName: this.mission ? missionName(this.mission.id) : '',
+        done: [...this.done],
+      });
     }
-    this.teleport(SPOTS.safehouse.x + 8, SPOTS.safehouse.z);
-    const failed = this.mission && (this.mission.id === 'sec' || this.mission.id === 'rug');
-    if (failed) this.failMission('被 SEC 约谈，任务失败');
-    this.audio.fail();
-    this.ui.toast(`约谈结束，罚款 ${fmtUsd(fine)}`);
+    if (kind === 'dealer') {
+      this.ui.openShop({
+        title: '车行',
+        usd: this.usd,
+        bal: this.bal,
+        prices: getPrices(),
+        items: VEHICLES.filter((item) => !item.unsold).map((item) => ({
+          ...item,
+          owned: this.ownedCars.has(item.id),
+        })),
+      });
+    }
   }
 
-  addWanted(amount, reason) {
-    const next = clamp(this.wanted + amount, 0, 5);
-    if (next === this.wanted) return;
-    this.wanted = next;
-    this.wantedTimer = 0;
-    this.ensurePolice();
-    if (reason) this.ui.toast(`${reason} · ${this.wanted} 星`);
-  }
-
-  ensurePolice() {
-    const need = this.wanted === 0 ? 0 : Math.min(4, this.wanted);
-    while (this.police.length < need) {
-      const spot = this.roadPoint(36, 68);
-      const car = this.makeCar(0x142033, { police: true, cast: true });
-      car.police = true;
-      car.x = spot.x;
-      car.z = spot.z;
-      car.yaw = 0;
-      car.speed = 0;
-      car.max = 22;
-      car.accel = 16;
-      this.cars.push(car);
-      this.police.push(car);
-      this.scene.add(car.mesh);
-    }
-    while (this.police.length > need) {
-      const car = this.police.pop();
-      this.scene.remove(car.mesh);
-      this.cars = this.cars.filter((item) => item !== car);
-      if (this.vehicle === car) this.vehicle = null;
-    }
+  closeModal() {
+    this.ui.closeModal();
+    if (this.mode === 'modal') this.setMode('play');
   }
 
   marketModel() {
@@ -1144,14 +1784,94 @@ export class Game {
     this.walletSig = '';
   }
 
-  netWorth() {
-    const prices = getPrices();
-    return COINS.reduce((sum, coin) => sum + this.bal[coin.id] * prices[coin.id], this.usd);
+  setMode(mode) {
+    if (!this.ready && mode !== 'boot') return;
+    this.mode = mode;
+    if (mode === 'play') {
+      this.ui.hidePause();
+      this.ui.closeModal();
+      this.ui.setPlayVisible(true);
+      this.audio.resume();
+    } else if (mode === 'pause') {
+      this.input.exitLock();
+      const net = COINS.reduce((sum, coin) => sum + this.bal[coin.id] * getPrices()[coin.id], this.usd);
+      this.ui.showPause(`现金 ${fmtUsd(this.usd)} · 净值 ${fmtUsd(net)} · 通缉 ${this.wanted} 星 · 任务完成 ${this.done.size}/${MISSIONS.length}`);
+    } else if (mode === 'title') {
+      this.input.exitLock();
+      this.ui.showTitle();
+      this.vehicle = null;
+    }
+  }
+
+  newGame() {
+    if (!this.ready) return;
+    if (loadSave() && !this.confirmNew) {
+      this.confirmNew = true;
+      this.ui.toast('再点一次新游戏，将覆盖存档');
+      return;
+    }
+    this.confirmNew = false;
+    this.usd = STARTING.usd;
+    this.bal = { ...STARTING.bal };
+    this.ownedCars = new Set(['sedan']);
+    this.ownedProps = new Set();
+    this.done = new Set();
+    this.collected = new Set();
+    this.wanted = 0;
+    this.mission = null;
+    this.player.hp = 100;
+    this.player.armor = 25;
+    this.weapon = 'fist';
+    this.ammo.pistol = { mag: 12, res: 48 };
+    this.ammo.rifle = { mag: 30, res: 90 };
+    setOrngMult(1);
+    if (this.vehicle) this.exitVehicle();
+    this.teleport(SPOTS.spawn.x, SPOTS.spawn.z, 0);
+    this.objectiveSig = '';
+    this.walletSig = '';
+    this.setMode('play');
+    this.ui.toast('欢迎来到 Vice Chain。F 上车，1/2/3 切换武器。');
+    this.save();
+  }
+
+  continueGame() {
+    const data = loadSave();
+    if (!data) {
+      this.ui.toast('没有存档');
+      return;
+    }
+    this.applySave(data);
+    this.setMode('play');
+  }
+
+  applySave(data) {
+    this.usd = data.usd;
+    this.bal = { ...data.bal };
+    this.ownedCars = new Set(data.ownedCars || ['sedan']);
+    this.ownedProps = new Set(data.ownedProps || []);
+    this.done = new Set(data.done || []);
+    this.collected = new Set(data.collected || []);
+    this.wanted = data.wanted || 0;
+    this.mission = data.mission || null;
+    this.player.hp = data.hp ?? 100;
+    this.player.armor = data.armor ?? 0;
+    this.weapon = data.weapon || 'fist';
+    if (data.ammo) this.ammo = data.ammo;
+    setOrngMult(data.orngMult || 1);
+    if (this.vehicle) this.exitVehicle();
+    this.teleport(data.player?.x ?? SPOTS.spawn.x, data.player?.z ?? SPOTS.spawn.z, 0);
+    if (data.player?.camYaw != null) this.camYaw = data.player.camYaw;
+    this.objectiveSig = '';
+    this.walletSig = '';
+    this.ensurePolice(true);
+    this.pushPrices();
   }
 
   save() {
-    const data = {
-      v: 1,
+    if (!this.ready || this.mode === 'boot') return;
+    const here = this.focus();
+    writeSave({
+      v: 2,
       usd: this.usd,
       bal: this.bal,
       ownedCars: [...this.ownedCars],
@@ -1161,409 +1881,107 @@ export class Game {
       wanted: this.wanted,
       mission: this.mission ? structuredClone(this.mission) : null,
       orngMult: getOrngMult(),
-      player: { x: this.player.x, z: this.player.z, camYaw: this.camYaw, camPitch: this.camPitch },
-      cars: this.garage.map((car) => ({ id: car.defId, x: car.x, z: car.z, yaw: car.yaw })),
-    };
-    writeSave(data);
+      hp: this.player.hp,
+      armor: this.player.armor,
+      weapon: this.weapon,
+      ammo: this.ammo,
+      player: { x: here.x, z: here.z, camYaw: this.camYaw, camPitch: this.camPitch },
+    });
     this.ui.setContinueEnabled(true);
   }
 
-  snapshot() {
-    return {
-      mode: this.mode,
-      started: this.started,
-      x: this.player.x,
-      z: this.player.z,
-      usd: this.usd,
-      bal: { ...this.bal },
-      wanted: this.wanted,
-      mission: this.mission ? { ...this.mission, got: this.mission.got ? [...this.mission.got] : null } : null,
-      done: [...this.done],
-      collected: this.collected.size,
-      vehicle: this.vehicle ? this.vehicle.defId || 'traffic' : null,
-      speed: this.vehicle ? this.vehicle.speed : 0,
-      source: getPriceSource(),
-      orngMult: getOrngMult(),
-      police: this.police.length,
-      ownedCars: [...this.ownedCars],
-      ownedProps: [...this.ownedProps],
-      camYaw: this.camYaw,
-    };
-  }
-
-  teleport(x, z) {
-    this.player.x = x;
-    this.player.z = z;
-    this.player.mesh.position.set(x, 0, z);
-    if (this.vehicle) {
-      this.vehicle.x = x;
-      this.vehicle.z = z;
-      this.vehicle.speed = 0;
-      this.vehicle.mesh.position.set(x, 0, z);
+  spawnDummy(dist) {
+    let npc = this.npcs.find((item) => item.dummy);
+    if (!npc) {
+      npc = this.makeNpc('worker', true);
+      npc.dummy = true;
+      this.npcs.push(npc);
     }
-  }
-
-  blocked(x, z, radius) {
-    return this.world.blocked(x, z, radius);
-  }
-
-  hitsAnyCar(x, z) {
-    for (const car of this.cars) {
-      if (dist2(x, z, car.x, car.z) < 1.55 * 1.55) return true;
-    }
-    return false;
-  }
-
-  carBlocked(x, z, self, radius = 1.25) {
-    if (this.world.blocked(x, z, radius)) return true;
-    for (const other of this.cars) {
-      if (other === self) continue;
-      if (dist2(x, z, other.x, other.z) < (radius + 1.15) ** 2) return true;
-    }
-    return false;
-  }
-
-  roadPoint(minDist, maxDist) {
-    for (let n = 0; n < 40; n += 1) {
-      const p = linePos(Math.floor(Math.random() * LINES));
-      const along = ORIGIN + Math.random() * (LINES - 1) * CELL;
-      const horizontal = Math.random() < 0.5;
-      const x = horizontal ? along : p + (Math.random() < 0.5 ? -3 : 3);
-      const z = horizontal ? p + (Math.random() < 0.5 ? -3 : 3) : along;
-      const d = Math.hypot(x - this.player.x, z - this.player.z);
-      if (d >= minDist && d <= maxDist && !this.world.blocked(x, z, 1.3)) return { x, z };
-    }
-    return { x: clamp(this.player.x + 40, WORLD.minX + 10, WORLD.maxX - 10), z: clamp(this.player.z, WORLD.minZ + 10, 100) };
-  }
-
-  randomSidewalk() {
-    const ix = Math.floor(Math.random() * (LINES - 1));
-    const iz = Math.floor(Math.random() * (LINES - 1));
-    const cx = ORIGIN + (ix + 0.5) * CELL;
-    const cz = ORIGIN + (iz + 0.5) * CELL;
-    const o = BUILD_LIMIT + 2.2;
-    const options = [
-      [cx + o, cz],
-      [cx - o, cz],
-      [cx, cz + o],
-      [cx, cz - o],
-    ];
-    const pick = options[Math.floor(Math.random() * options.length)];
-    return { x: pick[0], z: pick[1] };
-  }
-
-  spawnGarage() {
-    for (const def of CARS) {
-      const car = this.makeCar(def.color, { cast: true });
-      car.defId = def.id;
-      car.name = def.name;
-      car.max = def.max;
-      car.accel = def.accel;
-      car.grip = def.grip;
-      car.x = def.x;
-      car.z = def.z;
-      car.yaw = def.yaw;
-      car.speed = 0;
-      this.cars.push(car);
-      this.garage.push(car);
-      this.scene.add(car.mesh);
-    }
-  }
-
-  spawnTraffic(count) {
-    const colors = [0xf2f2f4, 0xcfd6e4, 0xf0d15a, 0x69d2c4, 0xe25b5b, 0x20242e];
-    for (let i = 0; i < count; i += 1) {
-      const horizontal = Math.random() < 0.5;
-      const p = linePos(Math.floor(Math.random() * LINES));
-      const along = ORIGIN + Math.random() * (LINES - 1) * CELL;
-      const side = Math.random() < 0.5 ? 3.1 : -3.1;
-      const car = this.makeCar(colors[i % colors.length], { cast: false });
-      car.traffic = true;
-      car.axis = horizontal ? 'x' : 'z';
-      car.dir = Math.random() < 0.5 ? 1 : -1;
-      car.cruise = 7 + Math.random() * 5;
-      car.speed = car.cruise;
-      car.max = 22;
-      car.accel = 16;
-      if (horizontal) {
-        car.x = along;
-        car.z = p + side;
-        car.yaw = car.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
-      } else {
-        car.x = p + side;
-        car.z = along;
-        car.yaw = car.dir > 0 ? 0 : Math.PI;
-      }
-      this.cars.push(car);
-      this.scene.add(car.mesh);
-    }
-  }
-
-  spawnPeds(count) {
-    const colors = [0xff8a1e, 0x3df0ff, 0xff2d95, 0xffe27a, 0x9ad07a, 0xffffff];
-    for (let i = 0; i < count; i += 1) {
-      const spot = this.randomSidewalk();
-      const mesh = this.createPerson(colors[i % colors.length]);
-      mesh.position.set(spot.x, 0, spot.z);
-      this.scene.add(mesh);
-      this.peds.push({
-        mesh,
-        x: spot.x,
-        z: spot.z,
-        yaw: Math.random() * Math.PI * 2,
-        speed: 1.1 + Math.random() * 0.7,
-        phase: Math.random() * 6,
-        down: 0,
-      });
-    }
-  }
-
-  spawnCoins() {
-    const rng = mulberry32(0xc01d5eed);
-    const pts = [];
-    for (let ix = 0; ix < LINES - 1; ix += 1) {
-      for (let iz = 0; iz < LINES - 1; iz += 1) {
-        const cx = ORIGIN + (ix + 0.5) * CELL;
-        const cz = ORIGIN + (iz + 0.5) * CELL;
-        const o = BUILD_LIMIT + 2.3;
-        pts.push([cx + o, cz], [cx - o, cz], [cx, cz + o], [cx, cz - o]);
-      }
-    }
-    pts.push([20, 150], [-10, 162], [70, 148], [-40, 155], [90, 158]);
-    for (let i = pts.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(rng() * (i + 1));
-      [pts[i], pts[j]] = [pts[j], pts[i]];
-    }
-    const chosen = pts.filter((p) => !this.world.blocked(p[0], p[1], 0.4)).slice(0, 36);
-    chosen.forEach((p, index) => {
-      const drop = DROPS[index % DROPS.length];
-      const color = new THREE.Color(COINS.find((c) => c.id === drop.id).color);
-      const mesh = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.34, 0.34, 0.1, 14),
-        new THREE.MeshStandardMaterial({ color, metalness: 0.65, roughness: 0.28, emissive: color, emissiveIntensity: 0.35 }),
-      );
-      mesh.position.set(p[0], 0.85, p[1]);
-      this.scene.add(mesh);
-      this.coins.push({ id: index, x: p[0], z: p[1], mesh, drop, got: false, phase: index });
-    });
-  }
-
-  spawnProps() {
-    const bagMat = new THREE.MeshStandardMaterial({ color: 0xffc857, emissive: 0xff8a1e, emissiveIntensity: 0.45 });
-    this.bags = SPOTS.loot.map((spot) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.45, 0.48), bagMat);
-      mesh.position.set(spot.x, 0.45, spot.z);
-      mesh.visible = false;
-      this.scene.add(mesh);
-      return mesh;
-    });
-    this.caseMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.55, 0.38, 0.18),
-      new THREE.MeshStandardMaterial({ color: 0xd7e1ff, emissive: 0x8aa4ff, emissiveIntensity: 0.4, metalness: 0.4 }),
-    );
-    this.caseMesh.position.set(SPOTS.coldPickup.x, 0.7, SPOTS.coldPickup.z);
-    this.caseMesh.visible = false;
-    this.scene.add(this.caseMesh);
-  }
-
-  createBeacon() {
-    const group = new THREE.Group();
-    const beam = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.25, 0.7, 16, 10, 1, true),
-      new THREE.MeshBasicMaterial({ color: 0xff2d95, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false }),
-    );
-    beam.position.y = 8;
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(1.1, 1.55, 24),
-      new THREE.MeshBasicMaterial({ color: 0xff2d95, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }),
-    );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.2;
-    group.add(beam, ring);
-    group.visible = false;
-    return group;
-  }
-
-  createPlayer() {
-    const mesh = this.createPerson(0xff8a1e);
-    mesh.traverse((obj) => {
-      if (obj.isMesh) obj.castShadow = true;
-    });
-    return { mesh, x: SPOTS.spawn.x, z: SPOTS.spawn.z, yaw: 0, walking: false };
-  }
-
-  createPerson(color) {
-    const group = new THREE.Group();
-    const skin = new THREE.MeshStandardMaterial({ color: 0xf0c7a4, roughness: 0.7 });
-    const cloth = new THREE.MeshStandardMaterial({ color, roughness: 0.55 });
-    const pants = new THREE.MeshStandardMaterial({ color: 0x242838, roughness: 0.8 });
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.62, 0.28), cloth);
-    torso.position.y = 1.18;
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 10), skin);
-    head.position.y = 1.66;
-    const legGeo = new THREE.BoxGeometry(0.16, 0.58, 0.18);
-    legGeo.translate(0, -0.29, 0);
-    const armGeo = new THREE.BoxGeometry(0.14, 0.5, 0.14);
-    armGeo.translate(0, -0.25, 0);
-    const legL = new THREE.Mesh(legGeo, pants);
-    const legR = new THREE.Mesh(legGeo, pants);
-    legL.position.set(-0.12, 0.78, 0);
-    legR.position.set(0.12, 0.78, 0);
-    const armL = new THREE.Mesh(armGeo, cloth);
-    const armR = new THREE.Mesh(armGeo, cloth);
-    armL.position.set(-0.36, 1.38, 0);
-    armR.position.set(0.36, 1.38, 0);
-    group.add(torso, head, legL, legR, armL, armR);
-    group.userData.limbs = { legL, legR, armL, armR };
-    return group;
-  }
-
-  makeCar(color, { police = false, cast = false } = {}) {
-    const mesh = new THREE.Group();
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(1.7, 0.42, 3.8),
-      new THREE.MeshStandardMaterial({ color, roughness: 0.32, metalness: 0.48 }),
-    );
-    body.position.y = 0.55;
-    body.castShadow = cast;
-    const cabin = new THREE.Mesh(
-      new THREE.BoxGeometry(1.35, 0.36, 1.65),
-      new THREE.MeshStandardMaterial({ color: 0x141820, roughness: 0.18, metalness: 0.55 }),
-    );
-    cabin.position.set(0, 0.9, -0.12);
-    cabin.castShadow = cast;
-    const wheelGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.24, 10);
-    wheelGeo.rotateZ(Math.PI / 2);
-    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1b1b1f, roughness: 0.7 });
-    const wheels = [];
-    [[-0.78, 1.15], [0.78, 1.15], [-0.78, -1.15], [0.78, -1.15]].forEach(([x, z]) => {
-      const wheel = new THREE.Mesh(wheelGeo, wheelMat);
-      wheel.position.set(x, 0.3, z);
-      mesh.add(wheel);
-      wheels.push(wheel);
-    });
-    const lamp = new THREE.Mesh(
-      new THREE.BoxGeometry(0.22, 0.1, 0.06),
-      new THREE.MeshBasicMaterial({ color: 0xfff3cc }),
-    );
-    lamp.position.set(-0.5, 0.58, 1.9);
-    const lamp2 = lamp.clone();
-    lamp2.position.x = 0.5;
-    mesh.add(body, cabin, lamp, lamp2);
-    let red = null;
-    let blue = null;
-    if (police) {
-      red = new THREE.Mesh(
-        new THREE.BoxGeometry(0.32, 0.12, 0.22),
-        new THREE.MeshStandardMaterial({ color: 0x330008, emissive: 0xff2244, emissiveIntensity: 1 }),
-      );
-      blue = new THREE.Mesh(
-        new THREE.BoxGeometry(0.32, 0.12, 0.22),
-        new THREE.MeshStandardMaterial({ color: 0x001033, emissive: 0x2266ff, emissiveIntensity: 1 }),
-      );
-      red.position.set(-0.24, 1.18, 0);
-      blue.position.set(0.24, 1.18, 0);
-      const decal = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.72, 0.32),
-        new THREE.MeshBasicMaterial({ map: secTexture() }),
-      );
-      decal.position.set(0, 0.62, 1.91);
-      mesh.add(red, blue, decal);
-    }
-    mesh.userData.wheels = wheels;
-    return {
-      mesh,
-      wheels,
-      red,
-      blue,
-      x: 0,
-      z: 0,
-      yaw: 0,
-      speed: 0,
-      max: 20,
-      accel: 16,
-      spin: 0,
-      police,
-      traffic: false,
-    };
-  }
-
-  syncCars(dt) {
-    for (const car of this.cars) {
-      car.mesh.position.set(car.x, 0, car.z);
-      car.mesh.rotation.y = car.yaw;
-      car.spin += car.speed * dt * 1.4;
-      for (const wheel of car.wheels) wheel.rotation.x = car.spin;
-    }
+    const here = this.focus();
+    const yaw = this.vehicle ? this.vehicle.yaw : this.camYaw;
+    if (!this.vehicle) this.player.yaw = yaw;
+    npc.x = here.x + Math.sin(yaw) * dist;
+    npc.z = here.z + Math.cos(yaw) * dist;
+    npc.hp = 48;
+    npc.alive = true;
+    npc.state = 'idle';
+    npc.team = 'civ';
+    npc.armed = false;
+    npc.down = 0;
+    npc.animLock = 0;
+    npc.actor.model.visible = true;
+    npc.actor.play('Idle', { fade: 0.05 });
+    return npc;
   }
 
   drawMinimap() {
     const ctx = this.ui.minimapCtx;
-    const px = this.player.x;
-    const pz = this.player.z;
-    ctx.clearRect(0, 0, 180, 180);
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(90, 90, 88, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.fillStyle = 'rgba(14, 8, 24, 0.94)';
-    ctx.fillRect(0, 0, 180, 180);
-    ctx.save();
-    ctx.translate(90, 90);
-    ctx.rotate(-this.camYaw);
-    ctx.scale(0.7, -0.7);
-    ctx.fillStyle = '#e7c48a';
-    ctx.fillRect(-150 - px, 132 - pz, 300, 48);
-    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-    ctx.lineWidth = 8;
-    for (const seg of roadSegments()) {
+    const w = this.ui.minimap.width;
+    const h = this.ui.minimap.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#123226';
+    ctx.fillRect(0, 0, w, h);
+    const focus = this.focus();
+    const scale = 0.42;
+    const toX = (x) => w / 2 + (x - focus.x) * scale;
+    const toY = (z) => h / 2 + (z - focus.z) * scale;
+    ctx.fillStyle = '#1c6e86';
+    ctx.fillRect(toX(-600), toY(348), 1200 * scale, 200 * scale);
+    ctx.strokeStyle = 'rgba(230,230,230,0.35)';
+    ctx.lineWidth = 2;
+    for (const seg of this.world?.roads || []) {
       ctx.beginPath();
-      ctx.moveTo(seg.x1 - px, seg.z1 - pz);
-      ctx.lineTo(seg.x2 - px, seg.z2 - pz);
+      ctx.moveTo(toX(seg.ax), toY(seg.az));
+      ctx.lineTo(toX(seg.bx), toY(seg.bz));
       ctx.stroke();
     }
-    const blip = (x, z, color, r) => {
-      ctx.fillStyle = color;
+    if (this.beacon?.visible) {
+      ctx.fillStyle = '#ff8a1e';
       ctx.beginPath();
-      ctx.arc(x - px, z - pz, r, 0, Math.PI * 2);
+      ctx.arc(toX(this.beacon.position.x), toY(this.beacon.position.z), 4, 0, Math.PI * 2);
       ctx.fill();
-    };
-    for (const coin of this.coins) if (!coin.got) blip(coin.x, coin.z, '#ffe27a', 2.3);
-    blip(SPOTS.exchange.x, SPOTS.exchange.z, '#3df0ff', 4.2);
-    blip(SPOTS.safehouse.x, SPOTS.safehouse.z, '#ff8a1e', 4);
-    blip(SPOTS.kiosk.x, SPOTS.kiosk.z, '#ff2d95', 3.2);
-    if (this.missionTarget) blip(this.missionTarget.x, this.missionTarget.z, '#ffffff', 5);
-    for (const car of this.cars) {
-      if (car === this.vehicle) continue;
-      blip(car.x, car.z, car.police ? '#ff3355' : '#aeb6c8', car.police ? 3.4 : 2.2);
     }
-    ctx.restore();
-    ctx.restore();
-    ctx.fillStyle = '#ffffff';
+    ctx.save();
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate(-this.camYaw);
+    ctx.fillStyle = '#fff6ea';
     ctx.beginPath();
-    ctx.moveTo(90, 72);
-    ctx.lineTo(81, 98);
-    ctx.lineTo(90, 91);
-    ctx.lineTo(99, 98);
+    ctx.moveTo(0, -7);
+    ctx.lineTo(5, 6);
+    ctx.lineTo(-5, 6);
     ctx.fill();
+    ctx.restore();
   }
-}
 
-let cachedSec = null;
-function secTexture() {
-  if (cachedSec) return cachedSec;
-  const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 64;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#101820';
-  ctx.fillRect(0, 0, 128, 64);
-  ctx.fillStyle = '#ffd24a';
-  ctx.font = '700 40px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('SEC', 64, 34);
-  cachedSec = new THREE.CanvasTexture(canvas);
-  cachedSec.colorSpace = THREE.SRGBColorSpace;
-  return cachedSec;
+  snapshot() {
+    const here = this.focus();
+    const dummy = this.npcs.find((npc) => npc.dummy);
+    return {
+      ready: this.ready,
+      mode: this.mode,
+      x: here.x,
+      z: here.z,
+      y: here.y,
+      speed: this.vehicle ? this.vehicle.speed : this.player.speed,
+      vehicle: this.vehicle?.id || null,
+      kind: this.vehicle?.kind || null,
+      altitude: here.y,
+      wanted: this.wanted,
+      hp: this.player.hp,
+      armor: this.player.armor,
+      weapon: this.weapon,
+      ammo: this.ammo,
+      mission: this.mission ? { ...this.mission } : null,
+      usd: this.usd,
+      bal: { ...this.bal },
+      time: this.time,
+      fps: this.fps || 0,
+      draws: this.renderer?.info?.render?.calls || 0,
+      dummyHp: dummy ? dummy.hp : null,
+      dummyAlive: dummy ? dummy.alive : null,
+      source: getPriceSource(),
+      buildings: this.world?.buildings?.length || 0,
+      npcs: this.npcs.filter((npc) => npc.alive && npc.actor.model.visible).length,
+    };
+  }
 }
