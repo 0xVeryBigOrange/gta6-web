@@ -17,7 +17,7 @@ export const CAST = [
     id: 'wang',
     name: '汪言',
     title: '模因币创始人',
-    pack: 'female',
+    pack: 'casual2',
     cloth: '#ffe14a',
     pants: '#ff4fad',
     hair: '#4a2a1c',
@@ -29,10 +29,10 @@ export const CAST = [
     id: 'whale',
     name: '老鲸',
     title: '巨鲸交易员',
-    pack: 'suit',
-    cloth: '#14315c',
-    pants: '#0c1828',
-    hair: '#141414',
+    pack: 'classy',
+    cloth: '#f4f1ea',
+    pants: '#1a1c22',
+    hair: '#d0d0d0',
     home: { x: 28, z: -70 },
     hat: 'chain',
     blurb: '老鲸看都不看你：小单就别挡我的车道。',
@@ -41,8 +41,8 @@ export const CAST = [
     id: 'kai',
     name: '柜姐凯',
     title: '交易所老板',
-    pack: 'female',
-    cloth: '#1a1a1a',
+    pack: 'suitf',
+    cloth: '#f7f4ef',
     pants: '#d4af37',
     hair: '#111111',
     home: { x: -8, z: 70 },
@@ -249,13 +249,23 @@ export function tintActor(actor, look) {
       const next = mat.clone();
       const name = next.name || '';
       const mesh = obj.name || '';
-      if (/skin/i.test(name) || name === 'Eye' || /^eye$/i.test(name)) return next;
+      if (/skin|face/i.test(name) || name === 'Eye' || /^eye$/i.test(name)) {
+        if (look.skin && /skin|face/i.test(name)) next.color.set(look.skin);
+        return next;
+      }
       if (/hair|eyebrow|moustache/i.test(name)) {
         if (look.hair) next.color.set(look.hair);
         return next;
       }
-      if (look.pants && /leg/i.test(mesh)) next.color.set(look.pants);
-      else if (look.cloth && !/feet|shoe/i.test(mesh)) next.color.set(look.cloth);
+      if (/pant/i.test(name) || /leg/i.test(mesh)) {
+        if (look.pants) next.color.set(look.pants);
+        return next;
+      }
+      if (/shirt|vest|jacket|black/i.test(name)) {
+        if (look.cloth) next.color.set(look.cloth);
+        if (/black/i.test(name)) next.color.multiplyScalar(0.55);
+        return next;
+      }
       return next;
     });
     obj.material = Array.isArray(obj.material) ? mapped : mapped[0];
@@ -317,8 +327,8 @@ export function makeNameTag(text, color = '#ffd7a8') {
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
-  sprite.scale.set(1.8, 0.45, 1);
-  sprite.position.y = 2.2;
+  sprite.scale.set(1.45, 0.36, 1);
+  sprite.position.y = 2.62;
   sprite.renderOrder = 12;
   sprite.userData.tagText = text;
   return sprite;

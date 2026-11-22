@@ -16,10 +16,13 @@ export function createActor(pack) {
     actions[clip.name] = mixer.clipAction(clip);
   }
   let hand = null;
+  let arm = null;
   model.traverse((obj) => {
-    if (hand || !obj.isBone) return;
-    if (/right.?hand|hand.?r|lowerarmr/i.test(obj.name)) hand = obj;
+    if (!obj.isBone) return;
+    if (/fist\.r|hand\.r|right.?hand/i.test(obj.name)) hand = obj;
+    else if (/lowerarm\.r|lowerarmr/i.test(obj.name)) arm = obj;
   });
+  hand = hand || arm;
   return {
     model,
     mixer,
