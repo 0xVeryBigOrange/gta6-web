@@ -29,16 +29,16 @@ export const WORLD = {
 };
 
 export const VEHICLES = [
-  { id: 'sedan', name: '街车', blurb: '起步就停在路边的轿车', price: 0, kind: 'car', file: 'sedan', max: 28, accel: 16, grip: 1.05, seat: 0.15 },
-  { id: 'suv', name: '链上越野', blurb: '高车身，甩监管更稳', price: 8000, kind: 'car', file: 'suv', max: 30, accel: 14, grip: 1.28, seat: 0.28 },
-  { id: 'sport', name: '落日掀背', blurb: '直道凶，弯里要收油', price: 16000, kind: 'car', file: 'hatchback-sports', max: 40, accel: 24, grip: 0.88, seat: 0.12 },
-  { id: 'taxi', name: '夜班出租', blurb: '市区巡游，转向老实', price: 4500, kind: 'car', file: 'taxi', max: 29, accel: 15, grip: 1, seat: 0.15 },
-  { id: 'race', name: '赛道橙', blurb: '油门很冲，抓地一般', price: 24000, kind: 'car', file: 'race', max: 46, accel: 30, grip: 0.8, seat: 0.08 },
-  { id: 'police', name: 'SEC 巡逻车', blurb: '征用来的，车行不卖', price: 0, kind: 'car', file: 'police', max: 36, accel: 22, grip: 1.1, seat: 0.15, unsold: true },
-  { id: 'bike', name: '链轮摩托', blurb: '窄、快、会侧倾', price: 5000, kind: 'bike', max: 38, accel: 28, grip: 0.7, seat: 0.42 },
-  { id: 'boat', name: '海岸快艇', blurb: '离开水面就几乎爬不动', price: 12000, kind: 'boat', file: 'boat-speed-a', max: 30, accel: 12, grip: 0.55, seat: 0.55 },
-  { id: 'heli', name: '橙翼直升机', blurb: '能悬停。Shift 上升，Ctrl 下降', price: 42000, kind: 'heli', max: 34, accel: 8, grip: 1, seat: 0.35 },
-  { id: 'plane', name: '落日轻航', blurb: '到机场跑道拉满油门再抬头', price: 56000, kind: 'plane', max: 64, accel: 10, grip: 1, seat: 0.45 },
+  { id: 'sedan', name: '街车', blurb: '起步就停在路边的轿车', price: 0, kind: 'car', file: 'sedan', max: 42, accel: 26, grip: 1.05, seat: 0.15 },
+  { id: 'suv', name: '链上越野', blurb: '高车身，甩监管更稳', price: 8000, kind: 'car', file: 'suv', max: 40, accel: 22, grip: 1.28, seat: 0.28 },
+  { id: 'sport', name: '落日掀背', blurb: '直道凶，弯里要收油', price: 16000, kind: 'car', file: 'hatchback-sports', max: 58, accel: 36, grip: 0.88, seat: 0.12 },
+  { id: 'taxi', name: '夜班出租', blurb: '市区巡游，转向老实', price: 4500, kind: 'car', file: 'taxi', max: 44, accel: 24, grip: 1, seat: 0.15 },
+  { id: 'race', name: '赛道橙', blurb: '油门很冲，抓地一般', price: 24000, kind: 'car', file: 'race', max: 68, accel: 44, grip: 0.8, seat: 0.08 },
+  { id: 'police', name: 'SEC 巡逻车', blurb: '征用来的，车行不卖', price: 0, kind: 'car', file: 'police', max: 52, accel: 32, grip: 1.1, seat: 0.15, unsold: true },
+  { id: 'bike', name: '链轮摩托', blurb: '窄、快、会侧倾', price: 5000, kind: 'bike', max: 56, accel: 40, grip: 0.7, seat: 0.42 },
+  { id: 'boat', name: '海岸快艇', blurb: '离开水面就几乎爬不动', price: 12000, kind: 'boat', file: 'boat-speed-a', max: 38, accel: 18, grip: 0.55, seat: 0.55 },
+  { id: 'heli', name: '橙翼直升机', blurb: '能悬停。Shift 上升，Ctrl 下降', price: 42000, kind: 'heli', max: 42, accel: 12, grip: 1, seat: 0.35 },
+  { id: 'plane', name: '落日轻航', blurb: '到机场跑道拉满油门再抬头', price: 56000, kind: 'plane', max: 78, accel: 14, grip: 1, seat: 0.45 },
 ];
 
 export const PROPS = [

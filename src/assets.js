@@ -5,40 +5,71 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 const BASE = import.meta.env.BASE_URL;
 
-const SHIRTS = {
-  male: 0x2456a8,
-  female: 0xc43b6e,
-  worker: 0xd06a1c,
-  suit: 0x1c2430,
+const OUTFITS = {
+  male: { skin: 0xd7a06a, hair: 0x1b120d, cloth: 0xff6a14, pants: 0x1e2433, mix: 1 },
+  female: { skin: 0xe4b48e, hair: 0x4a2a1c, cloth: 0xff4f92, pants: 0x2a1830, mix: 0.92 },
+  worker: { skin: 0xc68642, hair: 0x24160f, cloth: 0xe0a020, mix: 0.22 },
+  suit: { skin: 0xb98a62, hair: 0x141414, cloth: 0x1c2433, mix: 0.55 },
 };
 
-const NAMED = {
-  Skin: 0xc68642,
-  Face: 0xe0ac69,
-  Shirt: 0x2456a8,
-  Pants: 0x2c3140,
-  Belt: 0x5a3a22,
-  Hair: 0x24160f,
-  Shoes: 0x1b1b1b,
-  Eyes: 0x1c2834,
-  Teeth: 0xf2efe8,
+const CLIP_ALIAS = {
+  Gun_Shoot: 'Shoot_OneHanded',
+  HitRecieve: 'RecieveHit',
+  Punch_Right: 'Punch',
 };
 
-function paintMaterial(mat, shirt) {
+function paintMaterial(mat, outfit, meshName = '') {
   const next = mat.clone();
-  const key = Object.keys(NAMED).find((name) => next.name === name || next.name.startsWith(name));
-  if (key === 'Shirt') next.color.setHex(shirt);
-  else if (key) next.color.setHex(NAMED[key]);
-  else if (next.color.r + next.color.g + next.color.b < 0.45) {
-    next.color.multiplyScalar(7);
-    next.color.r = Math.min(1, next.color.r);
-    next.color.g = Math.min(1, next.color.g);
-    next.color.b = Math.min(1, next.color.b);
+  const name = next.name || '';
+  if (/skin_darker/i.test(name)) {
+    next.color.setHex(outfit.skin);
+    next.color.multiplyScalar(0.72);
+    next.roughness = 0.48;
+    next.metalness = 0;
+  } else if (/skin/i.test(name)) {
+    next.color.setHex(outfit.skin);
+    next.roughness = 0.5;
+    next.metalness = 0;
+  } else if (/^eye$/i.test(name) || name === 'Eye') {
+    next.color.setHex(0x16324a);
+    next.emissive?.setHex(0x16324a);
+    if ('emissiveIntensity' in next) next.emissiveIntensity = 0.45;
+    next.roughness = 0.18;
+  } else if (/hair|eyebrow|moustache/i.test(name)) {
+    next.color.setHex(outfit.hair);
+    next.roughness = 0.48;
+    next.metalness = 0;
+  } else if (outfit.pants != null && /leg/i.test(meshName)) {
+    next.color.setHex(outfit.pants);
+    next.roughness = 0.72;
+    next.metalness = 0.02;
+  } else if (/feet|shoe/i.test(meshName)) {
+    next.color.setHex(0x161616);
+    next.roughness = 0.6;
+    next.metalness = 0.08;
+  } else {
+    next.color.lerp(new THREE.Color(outfit.cloth), outfit.mix);
+    next.roughness = 0.62;
+    next.metalness = 0.04;
   }
-  next.roughness = Math.max(next.roughness ?? 0.6, 0.42);
-  next.metalness = Math.min(next.metalness ?? 0, 0.15);
-  if ('envMapIntensity' in next) next.envMapIntensity = 0.55;
+  if ('envMapIntensity' in next) next.envMapIntensity = 0.45;
   return next;
+}
+
+function aliasClips(clips) {
+  const seen = new Set();
+  const out = [];
+  for (const clip of clips) {
+    const raw = clip.name.includes('|') ? clip.name.split('|').pop() : clip.name;
+    const name = CLIP_ALIAS[raw] || raw;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const copy = clip.clone();
+    copy.name = name;
+    copy.tracks = copy.tracks.filter((track) => !track.name.endsWith('.scale'));
+    out.push(copy);
+  }
+  return out;
 }
 
 function paintRoot(root, shirt) {
@@ -47,8 +78,8 @@ function paintRoot(root, shirt) {
     obj.castShadow = true;
     obj.receiveShadow = true;
     obj.frustumCulled = true;
-    if (Array.isArray(obj.material)) obj.material = obj.material.map((m) => paintMaterial(m, shirt));
-    else if (obj.material) obj.material = paintMaterial(obj.material, shirt);
+    if (Array.isArray(obj.material)) obj.material = obj.material.map((m) => paintMaterial(m, shirt, obj.name));
+    else if (obj.material) obj.material = paintMaterial(obj.material, shirt, obj.name);
   });
 }
 
@@ -137,9 +168,9 @@ export async function loadGameAssets(renderer, onProgress) {
   for (const name of peopleFiles) {
     const gltf = loaded[`people:${name}`];
     const template = SkeletonUtils.clone(gltf.scene);
-    paintRoot(template, SHIRTS[name]);
-    groundCenter(template, { axis: 'y', value: 1.78 });
-    people[name] = { template, clips: gltf.animations };
+    paintRoot(template, OUTFITS[name]);
+    groundCenter(template, { axis: 'y', value: 1.84 });
+    people[name] = { template, clips: aliasClips(gltf.animations) };
   }
 
   const cars = {};

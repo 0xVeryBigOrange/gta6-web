@@ -25,6 +25,7 @@ export function createInput(canvas) {
     mission: false,
     pause: false,
     horn: false,
+    jump: false,
   };
   let dragging = false;
 
@@ -112,6 +113,9 @@ export function createInput(canvas) {
     boost() {
       return keys.has('ShiftLeft') || keys.has('ShiftRight') || pad.run;
     },
+    jumpHeld() {
+      return keys.has('Space') || pad.jump;
+    },
     descend() {
       return keys.has('ControlLeft') || keys.has('ControlRight');
     },
@@ -137,6 +141,7 @@ export function createInput(canvas) {
       pad.mission = false;
       pad.pause = false;
       pad.horn = false;
+      pad.jump = false;
     },
     consumeLook() {
       const look = { x: mouse.dx + pad.lookX, y: mouse.dy + pad.lookY, wheel: mouse.wheel };

@@ -55,7 +55,7 @@ export function createUI(root) {
       <div class="menu-card panel">
         <h2>操作说明</h2>
         <ul class="help-list">
-          <li>W A S D：行走或驾驶。Shift 奔跑，开车时略微加速</li>
+          <li>W A S D：行走或驾驶。Shift 冲刺，空格跳跃（手机双击摇杆）。开车时 Shift 略加速</li>
           <li>鼠标移动：视角。点击画面锁定鼠标，滚轮缩放</li>
           <li>F：上下车、上船、上飞机。征用别人的载具会增加通缉</li>
           <li>飞机：Shift 加油门，Ctrl 收油，W/S 俯仰，A/D 滚转。速度够了会离地</li>
@@ -428,7 +428,11 @@ export function createUI(root) {
         pad.x = dx / max;
         pad.y = -dy / max;
       };
+      let lastJoy = 0;
       joy.addEventListener('pointerdown', (e) => {
+        const now = performance.now();
+        if (now - lastJoy < 280) pad.jump = true;
+        lastJoy = now;
         active = e.pointerId;
         joy.setPointerCapture(e.pointerId);
         place(e.clientX, e.clientY);

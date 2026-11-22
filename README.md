@@ -58,7 +58,11 @@
 | H | 操作说明 |
 | Esc | 暂停。暂停里可以存档、关音效、回标题 |
 | 空格 | 车上喇叭；直升机上升 |
-| 手机 | 左下摇杆移动，右半屏滑动看四周，右下角按钮开火、上车、互动。钱包收成顶部「净值」按钮，点开再交易。竖屏会提示横过来，刘海和底部横条会让开 |
+| 手机 | 左下摇杆移动，双击摇杆跳跃，右半屏滑动看四周，右下角按钮开火、上车、互动。钱包收成顶部「净值」按钮。竖屏会提示横过来 |
+
+新游戏会先带你走一段教程：冲刺到光柱、上车、沿黄色 GPS 开到任务终端、按 E。之后屏幕上一直有「下一步」，小地图和地面黄线指向它。路边有加密 ATM、街头竞速、夜班出租、武器店、服装店、NFT 画廊和高速特技门。声望攒起来会升级。每天有一个小目标。
+
+走路大约 5 米/秒，冲刺大约 9 米/秒，空格可以跳，撞上矮障碍时跳一下能翻过去。车也更快，方便在这张大地图上跑。
 
 飞机要在跑道上把油门拉起来，速度够了会离地，W/S 控制俯仰，A/D 滚转。直升机能悬停。船离开水面几乎爬不动。
 
@@ -90,7 +94,7 @@
 
 允许再分发的免费模型，游戏里做了缩放和重新上色：
 
-- 角色：Quaternius Ultimate Animated Characters，CC0。动作来自同一套绑定（站立、走、跑、坐、出拳、开枪、受击、倒地）。经 [Yametech12/ghostname-3d-assets](https://github.com/Yametech12/ghostname-3d-assets) 获取。
+- 角色：Quaternius Ultimate Modular Men（Casual、Worker、SWAT），CC0。带眼睛、眉毛、头发和 24 段动作（走、跑、待机、挥手、出拳、开枪、受击、倒地、翻滚）。经 [fatal-funnel-public](https://github.com/euuuuuuan/fatal-funnel-public/tree/main/packages/renderer/assets/models/quaternius-men) 里的 GLB 获取。原包说明见 [Quaternius Ultimate Modular Characters](https://quaternius.com/packs/ultimatemodularcharacters.html)。主角是橙色外套的 Casual，路人用同一套骨骼换了工人和特警外形。
 - 楼、车、船、棕榈、路灯、手枪：Kenney，CC0。经 [shorepine/kenney](https://github.com/shorepine/kenney) 镜像获取。车和楼用了各自套件里的 `Textures/colormap.png`。
 - 天空的环境光：Poly Haven `venice_sunset` 1k HDR，CC0。
 

@@ -18,7 +18,7 @@ export function createActor(pack) {
   let hand = null;
   model.traverse((obj) => {
     if (hand || !obj.isBone) return;
-    if (/right.?hand/i.test(obj.name)) hand = obj;
+    if (/right.?hand|hand.?r|lowerarmr/i.test(obj.name)) hand = obj;
   });
   return {
     model,
@@ -44,7 +44,12 @@ export function createActor(pack) {
 
 export function locomotion(actor, speed, lock) {
   if (lock > 0) return;
-  if (speed > 4.2) actor.play('Run');
-  else if (speed > 0.45) actor.play('Walk');
-  else actor.play('Idle');
+  if (speed > 6.5) {
+    actor.play('Run');
+    actor.actions.Run?.setEffectiveTimeScale(1.08);
+  } else if (speed > 0.7) {
+    actor.play('Walk');
+    const scale = Math.min(1.55, Math.max(0.85, speed / 3.3));
+    actor.actions.Walk?.setEffectiveTimeScale(scale);
+  } else actor.play('Idle');
 }
