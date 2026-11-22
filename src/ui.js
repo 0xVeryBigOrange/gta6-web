@@ -20,6 +20,8 @@ export function createUI(root) {
         <div id="weapon-label"></div>
       </div>
       <div id="crosshair"></div>
+      <button id="btn-board" type="button">榜</button>
+      <div id="who" class="panel"></div>
       <div id="toasts"></div>
       <div id="rotate-hint" class="panel"><span>横过来玩更顺手</span><button type="button" id="rotate-dismiss">知道了</button></div>
     </div>
@@ -30,9 +32,13 @@ export function createUI(root) {
         <h1>VICE <span>CHAIN</span></h1>
         <div class="tag">GTA6 Web版 · 里昂尼达链上假日</div>
         <div class="brand-line">大橙子 · @0xVeryBigOrange</div>
+        <div id="account-line" class="fine">还没登录。游客进度只留在这台设备。</div>
         <div class="actions">
           <button class="primary" id="btn-new" type="button">新游戏</button>
           <button class="ghost" id="btn-continue" type="button">继续游戏</button>
+          <button class="ghost" id="btn-auth" type="button">登录 / 注册</button>
+          <button class="ghost" id="btn-guest" type="button">游客游玩</button>
+          <button class="ghost" id="btn-logout" type="button">退出登录</button>
           <button class="ghost" id="btn-help-title" type="button">操作说明</button>
         </div>
         <p class="fine">原创恶搞，与任何游戏发行商无关。角色、楼宇与部分载具使用 CC0 模型。<br/>不连接真实钱包，不涉及真实资金。行情只读，交易发生在本地存档里。</p>
@@ -44,6 +50,7 @@ export function createUI(root) {
         <p id="pause-stats" class="fine"></p>
         <div class="actions">
           <button class="primary" id="btn-resume" type="button">继续</button>
+          <button class="ghost" id="btn-board-pause" type="button">排行榜</button>
           <button class="ghost" id="btn-help" type="button">操作说明</button>
           <button class="ghost" id="btn-save" type="button">立即存档</button>
           <button class="ghost" id="btn-sound" type="button">音效：开</button>
@@ -62,15 +69,56 @@ export function createUI(root) {
           <li>直升机：Shift 或空格上升，Ctrl 下降，W/S 前后，A/D 转向</li>
           <li>船只能在海里和港口像样地开</li>
           <li>鼠标左键攻击。1 拳头，2 手枪，3 步枪，R 换弹</li>
-          <li>E：交易所、任务、车行、房产。M 任务，H 帮助，Esc 暂停，空格喇叭</li>
+          <li>E：交易所、任务、车行、房产，也可以和故事人物说话。M 任务，H 帮助，Esc 暂停，T 挥手</li>
           <li>倒下会在橙子医院醒来。手机：左下摇杆移动，右半屏拖动环顾，右侧按钮开火。横屏更顺手</li>
         </ul>
-        <p class="fine">打开菜单时城市时间会暂停。进度写入浏览器 localStorage。</p>
+        <p class="fine">打开菜单时城市时间会暂停。游客进度留在本地。登录后，净值、声望和故事章节会同步到排行榜。</p>
         <button class="primary" id="btn-help-close" type="button">知道了</button>
       </div>
     </div>
     <div id="modal" class="overlay">
       <div class="modal-card panel" id="modal-body"></div>
+    </div>
+    <div id="auth" class="overlay">
+      <div class="menu-card panel">
+        <h2 id="auth-title">登录</h2>
+        <p id="auth-msg" class="fine"></p>
+        <form id="auth-form" class="auth-form">
+          <label id="auth-email-label">邮箱<input id="auth-email" type="email" autocomplete="username" required /></label>
+          <label id="auth-pass-label">密码<input id="auth-pass" type="password" autocomplete="current-password" minlength="6" required /></label>
+          <label id="auth-nick-label">昵称<input id="auth-nick" type="text" maxlength="16" autocomplete="nickname" placeholder="2 到 16 个字" /></label>
+          <div class="actions">
+            <button class="primary" id="auth-submit" type="submit">登录</button>
+            <button class="ghost" id="auth-switch" type="button">没有账号？去注册</button>
+            <button class="ghost" id="auth-close" type="button">返回</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <div id="board" class="overlay">
+      <div class="modal-card panel">
+        <h2>排行榜</h2>
+        <div class="board-tabs">
+          <button type="button" data-tab="net_worth">净值</button>
+          <button type="button" data-tab="reputation">声望</button>
+          <button type="button" data-tab="level">等级</button>
+        </div>
+        <p id="board-msg" class="fine"></p>
+        <div id="board-list"></div>
+        <div class="actions"><button class="primary" id="board-close" type="button">关闭</button></div>
+      </div>
+    </div>
+    <div id="cutscene" class="overlay">
+      <div class="cut-card panel">
+        <div class="cut-row">
+          <div id="cut-portrait"></div>
+          <div>
+            <b id="cut-who"></b>
+            <p id="cut-text"></p>
+          </div>
+        </div>
+        <button class="primary" id="cut-next" type="button">继续</button>
+      </div>
     </div>
     <div id="boot" class="overlay on">
       <div class="title-card panel">
@@ -133,6 +181,9 @@ export function createUI(root) {
       $('#pause').classList.remove('on');
       $('#help').classList.remove('on');
       $('#modal').classList.remove('on');
+      $('#auth').classList.remove('on');
+      $('#board').classList.remove('on');
+      $('#cutscene').classList.remove('on');
       $('#title').classList.add('on');
       $('#hud').classList.remove('on');
     },
@@ -503,8 +554,81 @@ export function createUI(root) {
         show();
       });
     },
+    setIdentity(text) {
+      const el = $('#who');
+      el.textContent = text || '';
+      el.style.display = text ? 'block' : 'none';
+    },
+    setAccountLine(text, loggedIn) {
+      $('#account-line').textContent = text;
+      $('#btn-logout').style.display = loggedIn ? 'inline-block' : 'none';
+      $('#btn-guest').style.display = loggedIn ? 'none' : '';
+      $('#btn-auth').style.display = loggedIn ? 'none' : '';
+    },
+    showAuth(mode, message = '') {
+      paintAuth(mode, message);
+    },
+    hideAuth() {
+      $('#auth').classList.remove('on');
+    },
+    showBoard(model) {
+      $('#board').classList.add('on');
+      $('#board-msg').textContent = model.error || '';
+      $('#board').querySelectorAll('[data-tab]').forEach((btn) => {
+        btn.classList.toggle('on', btn.dataset.tab === model.tab);
+      });
+      const list = $('#board-list');
+      list.replaceChildren();
+      if (!model.rows?.length) {
+        const empty = document.createElement('p');
+        empty.className = 'fine';
+        empty.textContent = '还没有人上榜。登录后出去跑一圈就会出现。';
+        list.appendChild(empty);
+      } else {
+        model.rows.forEach((row, index) => {
+          const el = document.createElement('div');
+          el.className = `board-row${row.nickname === model.me ? ' me' : ''}`;
+          const rank = document.createElement('span');
+          rank.textContent = String(index + 1);
+          const dot = document.createElement('i');
+          dot.style.background = row.avatar_color || '#ff8a00';
+          const name = document.createElement('b');
+          name.textContent = row.nickname;
+          const value = document.createElement('em');
+          if (model.tab === 'reputation') value.textContent = `${row.reputation} 声望`;
+          else if (model.tab === 'level') value.textContent = `${row.level} 级`;
+          else value.textContent = fmtUsd(Number(row.net_worth) || 0);
+          el.append(rank, dot, name, value);
+          list.appendChild(el);
+        });
+      }
+      if (model.rank) {
+        const foot = document.createElement('p');
+        foot.className = 'fine';
+        foot.textContent = `我的名次：第 ${model.rank}`;
+        list.appendChild(foot);
+      }
+    },
+    hideBoard() {
+      $('#board').classList.remove('on');
+    },
+    showCutscene(line, color) {
+      $('#cutscene').classList.add('on');
+      $('#cut-who').textContent = line.who;
+      $('#cut-text').textContent = line.text;
+      $('#cut-portrait').style.background = color || '#ff6a14';
+      $('#cut-portrait').textContent = [...(line.who || '橙')][0];
+    },
+    hideCutscene() {
+      $('#cutscene').classList.remove('on');
+    },
     onNew: null,
     onContinue: null,
+    onGuest: null,
+    onLogout: null,
+    onAuth: null,
+    onBoard: null,
+    onCut: null,
     onResume: null,
     onQuit: null,
     onSave: null,
@@ -515,7 +639,48 @@ export function createUI(root) {
     onAbandon: null,
     onBuy: null,
     onCloseModal: null,
+    onBoardClose: null,
   };
+
+  let authMode = 'login';
+  function paintAuth(mode, message) {
+    authMode = mode;
+    $('#auth').classList.add('on');
+    $('#auth-msg').textContent = message || '';
+    const nickOnly = mode === 'nick';
+    $('#auth-title').textContent = mode === 'register' ? '注册' : nickOnly ? '取一个昵称' : '登录';
+    $('#auth-email-label').hidden = nickOnly;
+    $('#auth-pass-label').hidden = nickOnly;
+    $('#auth-nick-label').hidden = mode === 'login';
+    $('#auth-email').required = !nickOnly;
+    $('#auth-pass').required = !nickOnly;
+    $('#auth-nick').required = mode !== 'login';
+    $('#auth-submit').textContent = mode === 'register' ? '注册' : nickOnly ? '进入城市' : '登录';
+    $('#auth-switch').hidden = nickOnly;
+    $('#auth-switch').textContent = mode === 'register' ? '已有账号？去登录' : '没有账号？去注册';
+  }
+
+  $('#auth-form').onsubmit = (event) => {
+    event.preventDefault();
+    api.onAuth?.({
+      mode: authMode,
+      email: $('#auth-email').value,
+      password: $('#auth-pass').value,
+      nickname: $('#auth-nick').value,
+    });
+  };
+  $('#auth-switch').onclick = () => paintAuth(authMode === 'register' ? 'login' : 'register', '');
+  $('#auth-close').onclick = () => api.hideAuth();
+  $('#btn-auth').onclick = () => paintAuth('login', '');
+  $('#btn-guest').onclick = () => api.onGuest?.();
+  $('#btn-logout').onclick = () => api.onLogout?.();
+  $('#btn-board').onclick = () => api.onBoard?.('net_worth');
+  $('#btn-board-pause').onclick = () => api.onBoard?.('net_worth');
+  $('#board').querySelectorAll('[data-tab]').forEach((btn) => {
+    btn.onclick = () => api.onBoard?.(btn.dataset.tab);
+  });
+  $('#board-close').onclick = () => api.onBoardClose?.();
+  $('#cut-next').onclick = () => api.onCut?.();
 
   $('#btn-new').onclick = () => api.onNew?.();
   $('#btn-continue').onclick = () => api.onContinue?.();

@@ -602,3 +602,90 @@ html.phone:not(.portrait) #lookpad {
   bottom: calc(112px + var(--sab));
   left: 40%;
 }
+
+#btn-board, #who { pointer-events: auto; }
+#btn-board {
+  position: absolute;
+  top: calc(318px + var(--sat));
+  left: calc(14px + var(--sal));
+  min-width: 44px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 138, 30, 0.45);
+  background: rgba(20, 12, 28, 0.82);
+  color: #ffd7a8;
+  font-weight: 700;
+}
+#who {
+  position: absolute;
+  top: calc(318px + var(--sat));
+  left: calc(72px + var(--sal));
+  padding: 8px 10px;
+  color: #fff6ea;
+  max-width: 220px;
+}
+#btn-logout { display: none; }
+.auth-form { display: flex; flex-direction: column; gap: 8px; }
+.auth-form label { display: flex; flex-direction: column; gap: 4px; color: #ffd7a8; font-size: 13px; }
+.auth-form label[hidden] { display: none !important; }
+.auth-form input {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.28);
+  color: white;
+  padding: 10px 12px;
+}
+.board-tabs { display: flex; gap: 8px; margin-bottom: 8px; }
+.board-tabs button {
+  flex: 1;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+  color: white;
+  padding: 8px;
+}
+.board-tabs button.on { border-color: #ff8a1e; color: #ffd7a8; }
+#board-list { max-height: min(420px, 52vh); overflow: auto; }
+.board-row {
+  display: grid;
+  grid-template-columns: 28px 14px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.board-row i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.board-row.me { color: #ffd56a; }
+#cutscene.overlay {
+  align-items: flex-end;
+  background: linear-gradient(to top, rgba(8, 6, 16, 0.78), rgba(8, 6, 16, 0.05) 42%, transparent 70%);
+}
+.cut-card { width: min(560px, 100%); margin: 0 16px calc(28px + var(--sab)); }
+.cut-row { display: flex; gap: 12px; align-items: flex-start; }
+#cut-portrait {
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  font-size: 28px;
+  font-weight: 700;
+  color: #1a1020;
+  flex: none;
+}
+#cut-text { margin: 6px 0 0; line-height: 1.5; }
+html.phone #btn-board {
+  top: auto;
+  left: calc(110px + var(--sal));
+  bottom: calc(52px + var(--sab));
+  padding: 6px 10px;
+}
+html.phone #who {
+  top: auto;
+  left: calc(110px + var(--sal));
+  bottom: calc(14px + var(--sab));
+  max-width: 42vw;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+html.phone .cut-card, html.phone #auth .menu-card, html.phone #board .modal-card { width: min(100%, 520px); }

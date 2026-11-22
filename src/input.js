@@ -29,7 +29,12 @@ export function createInput(canvas) {
   };
   let dragging = false;
 
+  function typing(e) {
+    const tag = e.target?.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable;
+  }
   function down(e) {
+    if (typing(e)) return;
     if (MOVE.has(e.code)) e.preventDefault();
     if (e.repeat) return;
     keys.add(e.code);

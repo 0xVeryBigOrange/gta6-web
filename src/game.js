@@ -26,6 +26,21 @@ import { getOrngMult, getPriceSource, getPrices, refreshPrices, setOrngMult, tic
 import { loadSave, writeSave } from './save.js';
 import { angNorm, clamp, dist2, fmtNum, fmtUsd, mulberry32 } from './util.js';
 import { ACTIVITIES, GUIDE, RACE_GATES, dailyFor, levelFromRep, routeOnRoads } from './citylife.js';
+import {
+  cloud,
+  createProfile,
+  fetchBoard,
+  fetchProfile,
+  fetchRank,
+  fetchScore,
+  joinWorld,
+  pushScore,
+  signIn,
+  signOut,
+  signUp,
+  validNick,
+} from './cloud.js';
+import { CAST, CHAPTERS, addAccessory, castById, makeNameTag, tintActor } from './story.js';
 
 const WEAPONS = {
   fist: { name: '拳头', dmg: 24, cd: 0.48, range: 2.3 },
@@ -98,6 +113,21 @@ export class Game {
     this.atmUse = 0;
     this.eventTimer = 20;
     this.daily = null;
+    this.storyChapter = 0;
+    this.asGuest = true;
+    this.session = null;
+    this.profile = null;
+    this.scoreFloor = null;
+    this.storyCast = [];
+    this.remotes = new Map();
+    this.worldChannel = null;
+    this.poseTimer = 0;
+    this.cloudTimer = 0;
+    this.cutscene = null;
+    this.boardReturn = 'play';
+    this.onlineCount = 0;
+    this.localTag = null;
+    this.remoteCap = Math.min(window.innerWidth, window.innerHeight) <= 520 || window.innerWidth <= 700 ? 4 : 8;
     this.vehicle = null;
     this.rng = mulberry32(11);
     this.wireUi();
@@ -125,7 +155,14 @@ export class Game {
     this.ui.onAbandon = () => this.abandonMission();
     this.ui.onBuy = (id, pay) => this.buy(id, pay);
     this.ui.onCloseModal = () => this.closeModal();
+    this.ui.onGuest = () => this.playGuest();
+    this.ui.onLogout = () => this.logout();
+    this.ui.onAuth = (form) => this.submitAuth(form);
+    this.ui.onBoard = (tab) => this.openBoard(tab);
+    this.ui.onBoardClose = () => this.closeBoard();
+    this.ui.onCut = () => this.advanceCutscene();
     this.ui.setSoundLabel(true);
+    this.ui.setAccountLine('还没登录。游客进度只留在这台设备。', false);
   }
 
   makeDebug() {
@@ -165,6 +202,9 @@ export class Game {
       interact: () => this.interact(),
       spawnDummy: (dist = 6) => this.spawnDummy(dist),
       snapshot: () => this.snapshot(),
+      signUp: (email, password, nickname) => this.submitAuth({ mode: 'register', email, password, nickname }),
+      signIn: (email, password) => this.submitAuth({ mode: 'login', email, password }),
+      setNick: (nickname) => this.submitAuth({ mode: 'nick', nickname }),
     };
   }
 
@@ -190,6 +230,7 @@ export class Game {
     });
     this.last = performance.now();
     this.loop();
+    this.bindAccount();
   }
 
   setupThree() {
@@ -632,6 +673,17 @@ export class Game {
       this.updateLife(dt);
       this.updateGps();
       this.updateCoins();
+      this.updateRemotes(dt);
+      this.poseTimer += dt;
+      if (this.poseTimer > 0.12) {
+        this.poseTimer = 0;
+        this.sendPose();
+      }
+      this.cloudTimer += dt;
+      if (this.cloudTimer > 20) {
+        this.cloudTimer = 0;
+        this.syncScore();
+      }
       this.invuln = Math.max(0, this.invuln - dt);
       this.combatWantedCd = Math.max(0, this.combatWantedCd - dt);
       this.cooldown = Math.max(0, this.cooldown - dt);
@@ -682,7 +734,12 @@ export class Game {
       else if (this.mode === 'play') this.setMode('pause');
       else if (this.mode === 'pause') this.setMode('play');
     }
+    if (this.mode === 'cutscene' && (this.input.pressed('Space') || this.input.pressed('KeyE') || this.input.clicked())) {
+      this.advanceCutscene();
+      return;
+    }
     if (this.mode !== 'play') return;
+    if (this.input.pressed('KeyT')) this.sendEmote();
     if (this.input.clicked()) this.input.requestLock();
     if (this.input.pressed('KeyH')) this.ui.showHelp();
     if (this.input.pressed('Escape')) return;
@@ -881,6 +938,14 @@ export class Game {
   updateNpcs(dt) {
     const focus = this.focus();
     for (const npc of this.npcs) {
+      if (npc.team === 'story') {
+        const d = Math.hypot(npc.x - focus.x, npc.z - focus.z);
+        npc.actor.model.visible = d < 170;
+        npc.actor.model.position.set(npc.x, 0, npc.z);
+        npc.actor.model.rotation.y = npc.yaw;
+        if (d < 72) npc.actor.mixer.update(dt);
+        continue;
+      }
       if (npc.team === 'police' && !npc.active) {
         npc.actor.model.visible = false;
         continue;
@@ -1238,6 +1303,10 @@ export class Game {
       ring.visible = mission?.id === 'sky' && mission.phase === 'gates' && i >= mission.gate;
       ring.rotation.y = this.time * 0.4;
     });
+    if (mission?.id && String(mission.id).startsWith('story-')) {
+      this.updateStoryMission(mission);
+      return;
+    }
     if (!mission) {
       this.beacon.visible = false;
       if (this.objectiveSig !== 'idle') {
@@ -1437,6 +1506,7 @@ export class Game {
     this.rifle.visible = !this.vehicle && this.weapon === 'rifle';
     this.actor.mixer.update(step);
     this.placeWeapon(this.weapon === 'rifle' ? this.rifle : this.gun);
+    if (this.localTag) this.localTag.position.y = this.vehicle ? 3.15 : 2.2;
     for (const npc of this.npcs) {
       if (!npc.actor.model.visible) continue;
       npc.actor.model.position.set(npc.x, 0, npc.z);
@@ -1635,6 +1705,12 @@ export class Game {
   }
 
   interact() {
+    if (this.mode === 'cutscene') {
+      this.advanceCutscene();
+      return;
+    }
+    if (this.tryStoryTalk()) return;
+    if (this.storyInteract()) return;
     if (this.tryActivity()) return;
     if (!this.mission && this.guideStep < GUIDE.length && GUIDE[this.guideStep].until === 'interact') {
       this.guideStep += 1;
@@ -1700,7 +1776,10 @@ export class Game {
     if (!car) return;
     const owned = car.personal && this.ownedCars.has(car.id);
     if (!owned && !car.hotwired) {
-      const waived = (this.mission?.id === 'sky' && car.kind === 'plane') || (this.mission?.id === 'harbor' && car.kind === 'heli');
+      const waived = (this.mission?.id === 'sky' && car.kind === 'plane')
+        || (this.mission?.id === 'harbor' && car.kind === 'heli')
+        || (this.mission?.id === 'story-hack' && (car.kind === 'heli' || car.kind === 'plane'))
+        || (this.mission?.id === 'story-end' && (car.kind === 'heli' || car.kind === 'plane'));
       if (!waived) this.addWanted(1, `征用${car.def.name}`);
       car.hotwired = true;
     }
@@ -1879,6 +1958,11 @@ export class Game {
   completeMission() {
     const mission = this.mission;
     if (!mission) return;
+    if (String(mission.id).startsWith('story-')) {
+      const chapter = CHAPTERS.find((item) => item.id === mission.id);
+      if (chapter) this.finishStory(chapter);
+      return;
+    }
     if (mission.id === 'cold') this.bal.ETH += 0.2;
     if (mission.id === 'sec') {
       this.bal.SOL += 3;
@@ -1966,60 +2050,50 @@ export class Game {
     } else if (mode === 'pause') {
       this.input.exitLock();
       const net = COINS.reduce((sum, coin) => sum + this.bal[coin.id] * getPrices()[coin.id], this.usd);
-      this.ui.showPause(`现金 ${fmtUsd(this.usd)} · 净值 ${fmtUsd(net)} · 通缉 ${this.wanted} 星 · 任务完成 ${this.done.size}/${MISSIONS.length}`);
+      this.ui.showPause(`${this.displayName()} · 现金 ${fmtUsd(this.usd)} · 净值 ${fmtUsd(net)} · 声望 ${this.rep} · 故事 ${Math.min(this.storyChapter + 1, CHAPTERS.length)}/${CHAPTERS.length}`);
     } else if (mode === 'title') {
       this.input.exitLock();
       this.ui.showTitle();
       this.vehicle = null;
+      this.leavePresence();
     }
   }
 
   newGame() {
     if (!this.ready) return;
-    if (loadSave() && !this.confirmNew) {
+    if (this.session && this.profile) this.asGuest = false;
+    if (loadSave(this.saveUserId()) && !this.confirmNew) {
       this.confirmNew = true;
       this.ui.toast('再点一次新游戏，将覆盖存档');
       return;
     }
     this.confirmNew = false;
-    this.usd = STARTING.usd;
-    this.bal = { ...STARTING.bal };
-    this.ownedCars = new Set(['sedan']);
-    this.ownedProps = new Set();
-    this.done = new Set();
-    this.collected = new Set();
-    this.wanted = 0;
-    this.mission = null;
-    this.guideStep = 0;
-    this.rep = 0;
-    this.finishedJobs = new Set();
-    this.race = null;
-    this.taxi = null;
-    this.goalHint = null;
-    this.daily = dailyFor(new Date().toISOString().slice(0, 10));
-    this.player.hp = 100;
-    this.player.armor = 25;
-    this.weapon = 'fist';
-    this.ammo.pistol = { mag: 12, res: 48 };
-    this.ammo.rifle = { mag: 30, res: 90 };
-    setOrngMult(1);
+    this.resetProgress();
     if (this.vehicle) this.exitVehicle();
     this.teleport(SPOTS.spawn.x, SPOTS.spawn.z, 0);
     this.objectiveSig = '';
     this.walletSig = '';
     this.setMode('play');
     this.ui.toast('跟着橙色光柱。Shift 冲刺，空格跳跃，F 上车。');
+    this.refreshIdentity();
+    this.joinPresence();
     this.save();
   }
 
   continueGame() {
-    const data = loadSave();
-    if (!data) {
+    if (this.session && this.profile) this.asGuest = false;
+    const data = loadSave(this.saveUserId());
+    if (!data && !(this.session && !this.asGuest && this.scoreFloor)) {
       this.ui.toast('没有存档');
       return;
     }
-    this.applySave(data);
+    if (data) this.applySave(data);
+    else this.resetProgress();
+    this.applyCloudFloor();
     this.setMode('play');
+    this.refreshIdentity();
+    this.joinPresence();
+    this.ui.toast(this.session && !this.asGuest ? '已接上云端进度' : '继续本地进度');
   }
 
   applySave(data) {
@@ -2034,6 +2108,7 @@ export class Game {
     this.rep = data.rep || 0;
     this.guideStep = data.guideStep ?? (data.done?.length ? GUIDE.length : 0);
     this.finishedJobs = new Set(data.finishedJobs || []);
+    this.storyChapter = data.storyChapter || 0;
     this.daily = data.daily || null;
     this.player.hp = data.hp ?? 100;
     this.player.armor = data.armor ?? 0;
@@ -2065,6 +2140,7 @@ export class Game {
       rep: this.rep,
       guideStep: this.guideStep,
       finishedJobs: [...this.finishedJobs],
+      storyChapter: this.storyChapter,
       daily: this.daily,
       orngMult: getOrngMult(),
       hp: this.player.hp,
@@ -2072,8 +2148,9 @@ export class Game {
       weapon: this.weapon,
       ammo: this.ammo,
       player: { x: here.x, z: here.z, camYaw: this.camYaw, camPitch: this.camPitch },
-    });
+    }, this.saveUserId());
     this.ui.setContinueEnabled(true);
+    this.syncScore();
   }
 
   spawnDummy(dist) {
@@ -2113,6 +2190,8 @@ export class Game {
     chain.rotation.x = Math.PI / 2;
     chain.position.set(0, 1.4, 0.1);
     actor.model.add(chain);
+    this.localTag = makeNameTag(this.displayName(), '#ff6a14');
+    actor.model.add(this.localTag);
   }
 
   placeWeapon(mesh) {
@@ -2226,6 +2305,7 @@ export class Game {
     });
     this.skiff = skiff;
     this.scene.add(skiff);
+    this.spawnStoryCast();
   }
 
   level() {
@@ -2332,6 +2412,12 @@ export class Game {
     if (this.guideStep < GUIDE.length) {
       const step = GUIDE[this.guideStep];
       this.showMarker(step, step.text);
+      return;
+    }
+    if (this.storyChapter < CHAPTERS.length) {
+      const chapter = CHAPTERS[this.storyChapter];
+      const who = castById(chapter.giver);
+      this.showMarker(who.home, `故事 ${this.storyChapter + 1}/8 · 去找${who.name}`);
       return;
     }
     this.eventTimer -= dt;
@@ -2544,6 +2630,16 @@ export class Game {
       ctx.arc(toX(this.beacon.position.x), toY(this.beacon.position.z), 4, 0, Math.PI * 2);
       ctx.fill();
     }
+    ctx.fillStyle = '#ffd56a';
+    for (const person of CAST) {
+      ctx.beginPath();
+      ctx.arc(toX(person.home.x), toY(person.home.z), person.id === CHAPTERS[this.storyChapter]?.giver ? 4 : 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#7dffa6';
+    for (const remote of this.remotes.values()) {
+      ctx.fillRect(toX(remote.x) - 2, toY(remote.z) - 2, 4, 4);
+    }
     ctx.save();
     ctx.translate(w / 2, h / 2);
     ctx.rotate(-this.camYaw);
@@ -2554,6 +2650,626 @@ export class Game {
     ctx.lineTo(-5, 6);
     ctx.fill();
     ctx.restore();
+  }
+
+  saveUserId() {
+    return this.session && this.profile && !this.asGuest ? this.session.user.id : null;
+  }
+
+  displayName() {
+    return this.profile && !this.asGuest ? this.profile.nickname : '游客';
+  }
+
+  colorFor(nick) {
+    const palette = ['#ff6a14', '#ff4fad', '#3df0ff', '#ffe14a', '#7dffa6', '#8aa4ff', '#ff5a6a'];
+    let hash = 0;
+    for (const ch of nick) hash = (hash * 33 + ch.codePointAt(0)) >>> 0;
+    return palette[hash % palette.length];
+  }
+
+  netWorth() {
+    return COINS.reduce((sum, coin) => sum + (this.bal[coin.id] || 0) * (getPrices()[coin.id] || 0), this.usd);
+  }
+
+  resetProgress() {
+    this.usd = STARTING.usd;
+    this.bal = { ...STARTING.bal };
+    this.ownedCars = new Set(['sedan']);
+    this.ownedProps = new Set();
+    this.done = new Set();
+    this.collected = new Set();
+    this.wanted = 0;
+    this.mission = null;
+    this.guideStep = 0;
+    this.rep = 0;
+    this.finishedJobs = new Set();
+    this.race = null;
+    this.taxi = null;
+    this.goalHint = null;
+    this.storyChapter = 0;
+    this.daily = dailyFor(new Date().toISOString().slice(0, 10));
+    this.player.hp = 100;
+    this.player.armor = 25;
+    this.weapon = 'fist';
+    this.ammo.pistol = { mag: 12, res: 48 };
+    this.ammo.rifle = { mag: 30, res: 90 };
+    setOrngMult(1);
+  }
+
+  refreshIdentity() {
+    const name = this.displayName();
+    const online = this.onlineCount > 0 ? `在线 ${this.onlineCount}` : '单机';
+    this.ui.setIdentity(`${name} · ${online}`);
+    if (this.localTag && this.localTag.userData.tagText !== name) {
+      this.localTag.removeFromParent();
+      this.localTag.material.map?.dispose();
+      this.localTag.material.dispose();
+      this.localTag = makeNameTag(name, this.profile?.avatar_color || '#ff6a14');
+      this.actor?.model.add(this.localTag);
+    }
+  }
+
+  refreshAccountLine() {
+    const loggedIn = !!(this.session && this.profile);
+    this.ui.setAccountLine(
+      loggedIn ? `已登录：${this.profile.nickname}。新游戏和继续会记入排行榜。` : '还没登录。游客进度只留在这台设备。',
+      loggedIn,
+    );
+    const slot = loggedIn ? this.session.user.id : null;
+    this.ui.setContinueEnabled(!!loadSave(slot) || !!(loggedIn && this.scoreFloor));
+    this.refreshIdentity();
+  }
+
+  async bindAccount() {
+    const { data } = await cloud.auth.getSession();
+    this.session = data.session || null;
+    if (this.session) await this.ensureProfile();
+    this.refreshAccountLine();
+    cloud.auth.onAuthStateChange(async (_event, session) => {
+      this.session = session;
+      if (session) await this.ensureProfile();
+      else {
+        this.profile = null;
+        this.asGuest = true;
+        this.scoreFloor = null;
+        this.leavePresence();
+      }
+      this.refreshAccountLine();
+    });
+  }
+
+  async ensureProfile() {
+    const user = this.session?.user;
+    if (!user) return;
+    const got = await fetchProfile(user.id);
+    if (got.profile) {
+      this.profile = got.profile;
+      const score = await fetchScore(user.id);
+      this.scoreFloor = score.score || this.scoreFloor;
+      return;
+    }
+    const nick = validNick(user.user_metadata?.nickname || '');
+    if (nick) {
+      const made = await createProfile(user.id, nick, this.colorFor(nick));
+      if (made.profile) {
+        this.profile = made.profile;
+        return;
+      }
+      this.ui.showAuth('nick', made.error || '这个昵称已经被占用。');
+      return;
+    }
+    this.ui.showAuth('nick', '先取一个别人没用过的昵称。');
+  }
+
+  async submitAuth(form) {
+    if (form.mode === 'nick') {
+      const nick = validNick(form.nickname);
+      if (!nick || !this.session?.user) {
+        this.ui.showAuth('nick', '昵称要 2 到 16 个字，不要带空格。');
+        return { error: 'nick' };
+      }
+      const made = await createProfile(this.session.user.id, nick, this.colorFor(nick));
+      if (made.error) {
+        this.ui.showAuth('nick', made.error);
+        return made;
+      }
+      this.profile = made.profile;
+      this.asGuest = false;
+      this.ui.hideAuth();
+      this.refreshAccountLine();
+      this.ui.toast(`昵称定了：${nick}`);
+      return made;
+    }
+    if (form.mode === 'register') {
+      const nick = validNick(form.nickname);
+      if (!nick) {
+        this.ui.showAuth('register', '注册时就要定昵称，2 到 16 个字。');
+        return { error: 'nick' };
+      }
+      if (!form.password || form.password.length < 6) {
+        this.ui.showAuth('register', '密码至少 6 位。');
+        return { error: 'password' };
+      }
+      const result = await signUp(form.email, form.password, nick);
+      if (result.error) {
+        this.ui.showAuth('register', result.error);
+        return result;
+      }
+      if (result.confirm || !result.session) {
+        this.ui.showAuth('login', '请到邮箱点确认链接，然后再登录。确认后会回到游戏页面。');
+        return result;
+      }
+      this.session = result.session;
+      this.asGuest = false;
+      await this.ensureProfile();
+      if (this.profile) this.ui.hideAuth();
+      this.refreshAccountLine();
+      this.ui.toast('注册成功');
+      return result;
+    }
+    const result = await signIn(form.email, form.password);
+    if (result.error) {
+      this.ui.showAuth('login', result.error);
+      return result;
+    }
+    this.session = result.session;
+    this.asGuest = false;
+    await this.ensureProfile();
+    if (this.profile) this.ui.hideAuth();
+    this.refreshAccountLine();
+    this.ui.toast(this.profile ? `欢迎回来，${this.profile.nickname}` : '登录成功');
+    return result;
+  }
+
+  async logout() {
+    await signOut();
+    this.session = null;
+    this.profile = null;
+    this.asGuest = true;
+    this.scoreFloor = null;
+    this.leavePresence();
+    this.refreshAccountLine();
+    if (this.mode !== 'title') this.setMode('title');
+    this.ui.toast('已退出登录');
+  }
+
+  playGuest() {
+    this.asGuest = true;
+    this.leavePresence();
+    const data = loadSave(null);
+    if (data) {
+      this.applySave(data);
+      this.setMode('play');
+      this.refreshIdentity();
+      this.ui.toast('以游客身份继续，进度只留在这台设备');
+      return;
+    }
+    this.confirmNew = true;
+    this.resetProgress();
+    if (this.vehicle) this.exitVehicle();
+    this.teleport(SPOTS.spawn.x, SPOTS.spawn.z, 0);
+    this.setMode('play');
+    this.refreshIdentity();
+    this.save();
+    this.ui.toast('以游客身份开始，进度只留在这台设备');
+  }
+
+  applyCloudFloor() {
+    const row = this.scoreFloor;
+    if (!row || this.asGuest) return;
+    if ((row.story_chapter || 0) > this.storyChapter) this.storyChapter = row.story_chapter;
+    if ((row.reputation || 0) > this.rep) this.rep = row.reputation;
+    const net = Number(row.net_worth || 0);
+    const local = this.netWorth();
+    if (net > local + 1) this.usd += net - local;
+    this.walletSig = '';
+  }
+
+  async syncScore() {
+    if (!this.session || !this.profile || this.asGuest || !this.ready || this.mode === 'boot') return;
+    const floor = this.scoreFloor || {};
+    const row = {
+      user_id: this.session.user.id,
+      net_worth: Math.max(Math.round(this.netWorth()), Math.round(Number(floor.net_worth || 0))),
+      reputation: Math.max(this.rep | 0, floor.reputation || 0),
+      level: Math.max(this.level(), floor.level || 1),
+      missions_done: Math.max(this.done.size + this.storyChapter, floor.missions_done || 0),
+      story_chapter: Math.max(this.storyChapter, floor.story_chapter || 0),
+      updated_at: new Date().toISOString(),
+    };
+    const result = await pushScore(row);
+    if (!result.error) this.scoreFloor = row;
+  }
+
+  async openBoard(tab = 'net_worth') {
+    this.boardReturn = this.mode === 'title' || this.mode === 'pause' ? this.mode : 'play';
+    this.mode = 'board';
+    this.input.exitLock();
+    const result = await fetchBoard(tab);
+    let rank = null;
+    if (this.profile && !this.asGuest) {
+      const mine = (result.rows || []).findIndex((row) => row.nickname === this.profile.nickname);
+      if (mine >= 0) rank = mine + 1;
+      else {
+        const value = tab === 'reputation' ? this.rep : tab === 'level' ? this.level() : this.netWorth();
+        const placed = await fetchRank(tab, value);
+        rank = placed.rank;
+      }
+    }
+    this.ui.showBoard({
+      tab,
+      rows: result.rows || [],
+      error: result.error || '',
+      me: this.profile?.nickname || '',
+      rank,
+    });
+  }
+
+  closeBoard() {
+    this.ui.hideBoard();
+    const back = this.boardReturn || 'play';
+    this.boardReturn = 'play';
+    this.setMode(back);
+  }
+
+  async joinPresence() {
+    this.leavePresence();
+    if (!this.session || !this.profile || this.asGuest) return;
+    const channel = joinWorld(
+      this.session.user.id,
+      (pose) => this.onPose(pose),
+      (state) => this.onPresence(state),
+    );
+    this.worldChannel = channel;
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') this.sendPose(true);
+    });
+  }
+
+  leavePresence() {
+    if (this.worldChannel) {
+      cloud.removeChannel(this.worldChannel);
+      this.worldChannel = null;
+    }
+    for (const remote of this.remotes.values()) this.disposeRemote(remote);
+    this.remotes.clear();
+    this.onlineCount = this.session && this.profile && !this.asGuest ? 1 : 0;
+  }
+
+  sendPose(track = false) {
+    if (!this.worldChannel || !this.session || !this.profile) return;
+    const here = this.focus();
+    const payload = {
+      id: this.session.user.id,
+      nick: this.profile.nickname,
+      color: this.profile.avatar_color || '#ff6a14',
+      x: Math.round(here.x * 10) / 10,
+      z: Math.round(here.z * 10) / 10,
+      y: Math.round((here.y || 0) * 10) / 10,
+      yaw: Math.round((this.vehicle?.yaw ?? this.player.yaw) * 100) / 100,
+      v: this.vehicle?.kind || '',
+      e: this.emote || '',
+    };
+    this.worldChannel.send({ type: 'broadcast', event: 'pose', payload });
+    if (track) this.worldChannel.track(payload);
+    this.emote = '';
+  }
+
+  sendEmote() {
+    this.emote = 'wave';
+    this.actor?.play('Wave', { once: true, fade: 0.08 });
+    this.animLock = 1.1;
+    this.sendPose(true);
+  }
+
+  onPresence(state) {
+    const ids = Object.keys(state || {});
+    this.onlineCount = Math.max(ids.length, 1);
+    this.refreshIdentity();
+    for (const id of ids) {
+      if (id === this.session?.user?.id) continue;
+      const meta = state[id]?.[0];
+      if (meta) this.onPose({ ...meta, id });
+    }
+  }
+
+  onPose(pose) {
+    if (!pose?.id || pose.id === this.session?.user?.id) return;
+    let remote = this.remotes.get(pose.id);
+    if (!remote) {
+      if (this.remotes.size >= this.remoteCap) return;
+      remote = this.createRemote(pose);
+      this.remotes.set(pose.id, remote);
+    }
+    remote.tx = pose.x || 0;
+    remote.tz = pose.z || 0;
+    remote.ty = pose.y || 0;
+    remote.tyaw = pose.yaw || 0;
+    remote.nick = pose.nick || remote.nick;
+    remote.kind = pose.v || '';
+    remote.seen = this.time;
+    if (!remote.ready) {
+      remote.x = remote.tx;
+      remote.z = remote.tz;
+      remote.y = remote.ty;
+      remote.yaw = remote.tyaw;
+      remote.ready = true;
+    }
+    if (pose.e === 'wave') remote.actor.play('Wave', { once: true, fade: 0.1 });
+    if (remote.tag && remote.tag.userData.tagText !== remote.nick) {
+      remote.tag.removeFromParent();
+      remote.tag.material.map?.dispose();
+      remote.tag.material.dispose();
+      remote.tag = makeNameTag(remote.nick, pose.color || '#ffd7a8');
+      (remote.car || remote.actor.model).add(remote.tag);
+    }
+    this.syncRemoteRide(remote);
+  }
+
+  createRemote(pose) {
+    const actor = createActor(this.assets.people.male);
+    tintActor(actor, { cloth: pose.color || '#8aa4ff', pants: '#1c2433', hair: '#1b120d' });
+    const tag = makeNameTag(pose.nick || '玩家', pose.color || '#ffd7a8');
+    actor.model.add(tag);
+    this.scene.add(actor.model);
+    actor.play('Idle');
+    return {
+      id: pose.id,
+      actor,
+      tag,
+      car: null,
+      shown: '',
+      nick: pose.nick || '玩家',
+      kind: '',
+      x: pose.x || 0,
+      z: pose.z || 0,
+      y: pose.y || 0,
+      yaw: pose.yaw || 0,
+      tx: pose.x || 0,
+      tz: pose.z || 0,
+      ty: pose.y || 0,
+      tyaw: pose.yaw || 0,
+      seen: this.time,
+      ready: false,
+    };
+  }
+
+  syncRemoteRide(remote) {
+    if (remote.shown === remote.kind) return;
+    if (remote.car) {
+      this.scene.add(remote.actor.model);
+      remote.car.removeFromParent();
+      remote.car = null;
+    }
+    remote.shown = remote.kind;
+    if (!remote.kind) return;
+    const key = ['bike', 'boat', 'heli', 'plane'].includes(remote.kind) ? remote.kind : 'sedan';
+    const mesh = this.templates[key]?.clone(true);
+    if (!mesh) return;
+    mesh.traverse((obj) => {
+      if (obj.isMesh) obj.castShadow = false;
+    });
+    this.scene.add(mesh);
+    mesh.add(remote.actor.model);
+    remote.actor.model.position.set(0, key === 'bike' ? 0.55 : 0.15, 0.05);
+    remote.tag.position.y = 3.2;
+    remote.car = mesh;
+  }
+
+  disposeRemote(remote) {
+    remote.car?.removeFromParent();
+    remote.actor.model.removeFromParent();
+  }
+
+  updateRemotes(dt) {
+    const k = 1 - Math.exp(-8 * Math.max(dt, 0.001));
+    for (const [id, remote] of this.remotes) {
+      if (this.time - remote.seen > 8) {
+        this.disposeRemote(remote);
+        this.remotes.delete(id);
+        continue;
+      }
+      remote.x += (remote.tx - remote.x) * k;
+      remote.z += (remote.tz - remote.z) * k;
+      remote.y += (remote.ty - remote.y) * k;
+      remote.yaw += angNorm(remote.tyaw - remote.yaw) * Math.min(1, dt * 8);
+      const speed = Math.hypot(remote.tx - remote.x, remote.tz - remote.z);
+      if (remote.car) {
+        remote.car.position.set(remote.x, remote.y, remote.z);
+        remote.car.rotation.y = remote.yaw;
+      } else {
+        remote.actor.model.position.set(remote.x, remote.y, remote.z);
+        remote.actor.model.rotation.y = remote.yaw;
+        if (remote.tag) remote.tag.position.y = 2.2;
+      }
+      locomotion(remote.actor, remote.car ? 0 : Math.min(6, speed * 8), 0);
+      remote.actor.mixer.update(dt);
+    }
+  }
+
+  spawnStoryCast() {
+    this.storyCast = CAST.map((person) => {
+      const npc = this.makeNpc(person.pack);
+      npc.team = 'story';
+      npc.castId = person.id;
+      npc.name = person.name;
+      npc.x = person.home.x;
+      npc.z = person.home.z;
+      npc.yaw = Math.PI;
+      tintActor(npc.actor, person);
+      addAccessory(npc.actor, person.hat);
+      npc.actor.model.add(makeNameTag(person.name, person.cloth));
+      npc.actor.play('Idle');
+      this.npcs.push(npc);
+      return npc;
+    });
+  }
+
+  tryStoryTalk() {
+    const here = this.focus();
+    const npc = (this.storyCast || []).find((item) => dist2(here.x, here.z, item.x, item.z) < 16);
+    if (!npc) return false;
+    const person = castById(npc.castId);
+    const chapter = CHAPTERS[this.storyChapter];
+    if (this.mission) {
+      this.ui.toast('先把眼前这单做完');
+      return true;
+    }
+    if (!chapter || chapter.giver !== npc.castId) {
+      this.playCutscene([{ who: person.name, text: person.blurb }], person.cloth, () => this.setMode('play'));
+      return true;
+    }
+    if (this.guideStep < GUIDE.length) {
+      this.ui.toast('先跟着橙色光柱做完教程');
+      return true;
+    }
+    this.beginChapter(chapter);
+    return true;
+  }
+
+  beginChapter(chapter) {
+    const person = castById(chapter.giver);
+    this.playCutscene(chapter.intro, person.cloth, () => {
+      this.mission = {
+        id: chapter.id,
+        phase: 'go',
+        got: chapter.bags ? chapter.bags.map(() => false) : null,
+        gate: 0,
+      };
+      if (chapter.wanted) {
+        this.wanted = Math.max(this.wanted, chapter.wanted);
+        this.ensurePolice(true);
+      }
+      this.objectiveSig = '';
+      this.setMode('play');
+      this.ui.toast(chapter.title);
+    });
+  }
+
+  playCutscene(lines, color, done) {
+    this.cutscene = { lines, i: 0, color, done };
+    this.mode = 'cutscene';
+    this.input.exitLock();
+    this.ui.showCutscene(lines[0], color);
+  }
+
+  advanceCutscene() {
+    if (!this.cutscene) return;
+    this.cutscene.i += 1;
+    const line = this.cutscene.lines[this.cutscene.i];
+    if (!line) {
+      const done = this.cutscene.done;
+      this.cutscene = null;
+      this.ui.hideCutscene();
+      done?.();
+      return;
+    }
+    const who = CAST.find((item) => item.name === line.who);
+    this.ui.showCutscene(line, who?.cloth || this.cutscene.color);
+  }
+
+  storyInteract() {
+    const chapter = CHAPTERS.find((item) => item.id === this.mission?.id);
+    if (!chapter || chapter.kind !== 'pump') return false;
+    const here = this.focus();
+    if (dist2(here.x, here.z, chapter.spot.x, chapter.spot.z) > chapter.spot.r ** 2) return false;
+    this.finishStory(chapter);
+    return true;
+  }
+
+  updateStoryMission(mission) {
+    const chapter = CHAPTERS.find((item) => item.id === mission.id);
+    if (!chapter) return;
+    const here = this.focus();
+    let target = chapter.spot;
+    let text = chapter.objective;
+    let done = false;
+    if (chapter.kind === 'reach') {
+      done = dist2(here.x, here.z, chapter.spot.x, chapter.spot.z) < chapter.spot.r ** 2;
+    } else if (chapter.kind === 'two') {
+      if (mission.phase !== 'back') {
+        if (dist2(here.x, here.z, chapter.spot.x, chapter.spot.z) < chapter.spot.r ** 2) {
+          mission.phase = 'back';
+          this.ui.toast(chapter.mid);
+        }
+      } else {
+        target = chapter.back;
+        text = chapter.backText;
+        done = dist2(here.x, here.z, chapter.back.x, chapter.back.z) < chapter.back.r ** 2;
+      }
+    } else if (chapter.kind === 'bags') {
+      const left = mission.got.findIndex((flag) => !flag);
+      if (left >= 0) {
+        target = chapter.bags[left];
+        text = `${chapter.objective} ${mission.got.filter(Boolean).length}/3`;
+        chapter.bags.forEach((spot, index) => {
+          if (!mission.got[index] && dist2(here.x, here.z, spot.x, spot.z) < 12) mission.got[index] = true;
+        });
+      } else {
+        target = chapter.spot;
+        text = chapter.backText;
+        done = dist2(here.x, here.z, chapter.spot.x, chapter.spot.z) < chapter.spot.r ** 2;
+      }
+    } else if (chapter.kind === 'escape') {
+      text = `故事 5/8 · ${this.wanted} 星，甩掉后再进安全屋`;
+      done = this.wanted === 0 && dist2(here.x, here.z, chapter.spot.x, chapter.spot.z) < chapter.spot.r ** 2;
+    } else if (chapter.kind === 'fly') {
+      const flying = this.vehicle && (this.vehicle.kind === 'heli' || this.vehicle.kind === 'plane');
+      text = flying ? '故事 6/8 · 继续拉高，超过 12 米' : chapter.objective;
+      done = !!flying && here.y > 12;
+    } else if (chapter.kind === 'gates') {
+      const gate = chapter.gates[Math.min(mission.gate, chapter.gates.length - 1)];
+      target = gate;
+      text = `故事 7/8 · 光环 ${Math.min(mission.gate + 1, chapter.gates.length)}/${chapter.gates.length}`;
+      if (mission.gate < chapter.gates.length && dist2(here.x, here.z, gate.x, gate.z) < gate.r ** 2) {
+        mission.gate += 1;
+        if (mission.gate >= chapter.gates.length) done = true;
+      }
+    } else if (chapter.kind === 'finale') {
+      if (mission.phase !== 'fly') {
+        if (dist2(here.x, here.z, chapter.spot.x, chapter.spot.z) < chapter.spot.r ** 2) {
+          mission.phase = 'fly';
+          this.ui.toast('上直升机，拉高离开');
+        }
+      } else {
+        const flying = this.vehicle && (this.vehicle.kind === 'heli' || this.vehicle.kind === 'plane');
+        text = '故事 8/8 · 拉高离开港口';
+        done = !!flying && here.y > 12;
+      }
+    }
+    if (done) {
+      this.finishStory(chapter);
+      return;
+    }
+    this.beacon.visible = !!target;
+    if (target) {
+      this.beacon.position.set(target.x, 2.6, target.z);
+      this.beacon.rotation.y = this.time;
+    }
+    if (text !== this.objectiveSig) {
+      this.objectiveSig = text;
+      this.ui.setObjective(text);
+    }
+  }
+
+  finishStory(chapter) {
+    if (!this.mission || this.mission.id !== chapter.id) return;
+    this.mission = null;
+    const reward = chapter.reward || {};
+    if (reward.usd) this.usd += reward.usd;
+    if (reward.rep) this.rep += reward.rep;
+    if (reward.orng) this.bal.ORNG += reward.orng;
+    if (reward.btc) this.bal.BTC += reward.btc;
+    if (reward.sol) this.bal.SOL += reward.sol;
+    this.storyChapter = Math.max(this.storyChapter, CHAPTERS.indexOf(chapter) + 1);
+    this.walletSig = '';
+    this.objectiveSig = '';
+    this.audio.success();
+    this.ui.toast(`${chapter.title} 完成`);
+    this.save();
+    const next = () => this.setMode('play');
+    if (chapter.outro?.length) this.playCutscene(chapter.outro, castById(chapter.giver).cloth, next);
+    else next();
   }
 
   snapshot() {
@@ -2587,6 +3303,10 @@ export class Game {
       npcs: this.npcs.filter((npc) => npc.alive && npc.actor.model.visible).length,
       guideStep: this.guideStep,
       rep: this.rep,
+      story: this.storyChapter,
+      nick: this.displayName(),
+      online: this.onlineCount,
+      remotes: [...this.remotes.values()].map((item) => item.nick),
       level: this.level(),
       route: this.routeCount || 0,
       jumpY: this.player.y,
