@@ -5,11 +5,11 @@ export function createUI(root) {
   root.innerHTML = `
     <canvas id="view"></canvas>
     <div id="hud">
-      <div class="brand panel"><b>VICE CHAIN 3D</b><small>GTA6 Web版 · 🍊 大橙子</small></div>
+      <div class="brand panel"><b><span class="long">VICE CHAIN 3D</span><span class="short">VICE</span></b><small>GTA6 Web版 · 🍊 大橙子</small></div>
       <div id="ticker" class="panel"><div class="track" id="ticker-track"></div></div>
       <div id="stars" class="panel"><div id="star-row"></div><small id="headline"></small></div>
       <div id="objective" class="panel"></div>
-      <div id="wallet" class="panel"></div>
+      <div id="wallet" class="panel"><button type="button" id="wallet-chip" aria-expanded="false">净值</button><div id="wallet-body"></div></div>
       <div id="minimap-wrap"><canvas id="minimap" width="180" height="180"></canvas></div>
       <div id="prompt" class="panel"></div>
       <div id="speedo"></div>
@@ -21,6 +21,7 @@ export function createUI(root) {
       </div>
       <div id="crosshair"></div>
       <div id="toasts"></div>
+      <div id="rotate-hint" class="panel"><span>横过来玩更顺手</span><button type="button" id="rotate-dismiss">知道了</button></div>
     </div>
     <div id="hurt"></div>
     <div id="title" class="overlay on">
@@ -62,7 +63,7 @@ export function createUI(root) {
           <li>船只能在海里和港口像样地开</li>
           <li>鼠标左键攻击。1 拳头，2 手枪，3 步枪，R 换弹</li>
           <li>E：交易所、任务、车行、房产。M 任务，H 帮助，Esc 暂停，空格喇叭</li>
-          <li>倒下会在橙子医院醒来。手机：摇杆、右半屏看四周、开火键</li>
+          <li>倒下会在橙子医院醒来。手机：左下摇杆移动，右半屏拖动环顾，右侧按钮开火。横屏更顺手</li>
         </ul>
         <p class="fine">打开菜单时城市时间会暂停。进度写入浏览器 localStorage。</p>
         <button class="primary" id="btn-help-close" type="button">知道了</button>
@@ -98,12 +99,25 @@ export function createUI(root) {
 
   function toast(text) {
     const stack = $('#toasts');
-    while (stack.children.length >= 3) stack.firstChild.remove();
+    const cap = document.documentElement.classList.contains('phone') ? 1 : 3;
+    while (stack.children.length >= cap) stack.firstChild.remove();
     const el = document.createElement('div');
     el.className = 'toast';
     el.textContent = text;
     stack.appendChild(el);
-    setTimeout(() => el.remove(), 2800);
+    setTimeout(() => el.remove(), 2600);
+  }
+
+  function syncLayout() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const phone = w <= 700 || (h <= 520 && w <= 1100);
+    document.documentElement.classList.toggle('phone', phone);
+    document.documentElement.classList.toggle('portrait', phone && h > w);
+    let dismissed = false;
+    try { dismissed = sessionStorage.getItem('vice-rotate-dismiss') === '1'; } catch { dismissed = false; }
+    const playing = $('#hud').classList.contains('on');
+    $('#rotate-hint').classList.toggle('show', phone && h > w && playing && !dismissed);
   }
 
   const api = {
@@ -158,11 +172,15 @@ export function createUI(root) {
     },
     setPrompt(text) {
       const el = $('#prompt');
-      el.style.display = text ? 'block' : 'none';
-      el.textContent = text || '';
+      const value = (text || '').trim();
+      el.style.display = value ? 'block' : 'none';
+      el.textContent = value;
     },
     setSpeed(text) {
-      $('#speedo').textContent = text || '';
+      const el = $('#speedo');
+      const value = (text || '').trim();
+      el.textContent = value;
+      el.style.display = value ? 'block' : 'none';
     },
     setFps(n) {
       $('#fps').textContent = String(n);
@@ -204,15 +222,23 @@ export function createUI(root) {
       $('#ticker-track').innerHTML = `${text}　　${text}`;
     },
     setWallet(model) {
+      const net = fmtUsd(model.net);
+      $('#wallet-chip').textContent = `净值 ${net}`;
       const lines = [`<div>现金 <strong>${fmtUsd(model.usd)}</strong></div>`];
       for (const coin of COINS) {
         lines.push(`<div><span style="color:${coin.color}">${coin.tick}</span> ${fmtNum(model.bal[coin.id], coin.dec)}</div>`);
       }
-      lines.push(`<div>净值 <strong>${fmtUsd(model.net)}</strong></div>`);
+      lines.push(`<div>净值 <strong>${net}</strong></div>`);
       lines.push('<button class="link" type="button" id="btn-open-ex">打开交易所</button>');
-      $('#wallet').innerHTML = lines.join('');
-      $('#btn-open-ex').onclick = () => api.onOpenExchange?.();
+      $('#wallet-body').innerHTML = lines.join('');
+      $('#btn-open-ex').onclick = (event) => {
+        event.stopPropagation();
+        $('#wallet').classList.remove('open');
+        $('#wallet-chip').setAttribute('aria-expanded', 'false');
+        api.onOpenExchange?.();
+      };
     },
+    syncLayout,
     setSoundLabel(on) {
       $('#btn-sound').textContent = `音效：${on ? '开' : '关'}`;
     },
@@ -370,12 +396,15 @@ export function createUI(root) {
       $('#modal').classList.add('on');
     },
     bindTouch(pad) {
-      const coarse = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
       const touch = $('#touch');
-      const show = () => touch.classList.toggle('on', coarse && $('#hud').classList.contains('on'));
+      const show = () => {
+        const phone = document.documentElement.classList.contains('phone');
+        touch.classList.toggle('on', phone && $('#hud').classList.contains('on'));
+      };
       api.setPlayVisible = (on) => {
         $('#hud').classList.toggle('on', on);
         $('#title').classList.toggle('on', !on);
+        syncLayout();
         show();
       };
       const joy = $('#joy');
@@ -393,8 +422,9 @@ export function createUI(root) {
           dx = (dx / mag) * max;
           dy = (dy / mag) * max;
         }
-        knob.style.left = `${rect.width / 2 + dx - 27}px`;
-        knob.style.top = `${rect.height / 2 + dy - 27}px`;
+        knob.style.left = '50%';
+        knob.style.top = '50%';
+        knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
         pad.x = dx / max;
         pad.y = -dy / max;
       };
@@ -412,8 +442,9 @@ export function createUI(root) {
         active = null;
         pad.x = 0;
         pad.y = 0;
-        knob.style.left = '37px';
-        knob.style.top = '37px';
+        knob.style.left = '50%';
+        knob.style.top = '50%';
+        knob.style.transform = 'translate(-50%, -50%)';
       };
       joy.addEventListener('pointerup', release);
       joy.addEventListener('pointercancel', release);
@@ -463,6 +494,10 @@ export function createUI(root) {
       hold('#t-mission', 'mission');
       hold('#t-pause', 'pause');
       show();
+      window.addEventListener('resize', () => {
+        syncLayout();
+        show();
+      });
     },
     onNew: null,
     onContinue: null,
@@ -487,6 +522,16 @@ export function createUI(root) {
   $('#btn-save').onclick = () => api.onSave?.();
   $('#btn-quit').onclick = () => api.onQuit?.();
   $('#btn-sound').onclick = () => api.onToggleSound?.();
+  $('#wallet-chip').onclick = (event) => {
+    event.stopPropagation();
+    const open = $('#wallet').classList.toggle('open');
+    $('#wallet-chip').setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  $('#rotate-dismiss').onclick = () => {
+    try { sessionStorage.setItem('vice-rotate-dismiss', '1'); } catch { /* private mode */ }
+    $('#rotate-hint').classList.remove('show');
+  };
   api.setHeadline();
+  syncLayout();
   return api;
 }

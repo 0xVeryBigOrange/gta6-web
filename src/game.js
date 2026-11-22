@@ -49,6 +49,7 @@ export class Game {
     this.camYaw = 0.4;
     this.camPitch = 0.35;
     this.camDist = 7.2;
+    this.layoutMode = null;
     this.confirmNew = false;
     this.freezePolice = false;
     this.script = null;
@@ -182,12 +183,13 @@ export class Game {
   }
 
   setupThree() {
+    const lite = window.innerWidth <= 700 || (window.innerHeight <= 520 && window.innerWidth <= 1100);
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0xd7c2a4, 0.00235);
     this.camera = new THREE.PerspectiveCamera(62, 1, 0.1, 2200);
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.ui.canvas,
-      antialias: true,
+      antialias: !lite,
       powerPreference: 'high-performance',
       preserveDrawingBuffer: true,
     });
@@ -198,7 +200,8 @@ export class Game {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.sun = new THREE.DirectionalLight(0xfff1dd, 2.5);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(1024, 1024);
+    const shadow = (window.innerWidth <= 700 || (window.innerHeight <= 520 && window.innerWidth <= 1100)) ? 512 : 1024;
+    this.sun.shadow.mapSize.set(shadow, shadow);
     this.sun.shadow.camera.near = 2;
     this.sun.shadow.camera.far = 140;
     this.sun.shadow.camera.left = -48;
@@ -212,6 +215,7 @@ export class Game {
     this.scene.add(this.hemi);
     this.fill = new THREE.DirectionalLight(0x88b4ff, 0.25);
     this.scene.add(this.fill);
+    this.scene.add(this.fill.target);
     const skyGeo = new THREE.SphereGeometry(900, 24, 16);
     const skyMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
@@ -253,18 +257,51 @@ export class Game {
     this.composer.addPass(new OutputPass());
     this.resize();
     window.addEventListener('resize', () => this.resize());
+    window.addEventListener('orientationchange', () => this.resize());
+    window.visualViewport?.addEventListener('resize', () => this.resize());
   }
 
   resize() {
-    const w = window.innerWidth;
-    const h = Math.max(1, window.innerHeight);
+    this.ui?.syncLayout?.();
+    const canvas = this.ui.canvas;
+    const w = canvas.clientWidth || window.innerWidth;
+    const h = Math.max(1, canvas.clientHeight || window.innerHeight);
+    const phone = document.documentElement.classList.contains('phone');
+    const portrait = document.documentElement.classList.contains('portrait');
+    const mode = phone ? (portrait ? 'port' : 'land') : 'desk';
+    if (mode !== this.layoutMode) {
+      this.layoutMode = mode;
+      if (mode === 'port') {
+        this.camDist = 11;
+        this.camPitch = -0.22;
+        this.camera.fov = 68;
+      } else if (mode === 'land') {
+        this.camDist = 9.4;
+        this.camPitch = -0.18;
+        this.camera.fov = 64;
+      } else {
+        this.camDist = 7.2;
+        this.camPitch = 0.35;
+        this.camera.fov = 62;
+      }
+    }
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    const ratio = Math.min(window.devicePixelRatio || 1, 1.35);
+    const cap = phone ? (portrait ? 1 : 1.15) : 1.35;
+    const ratio = Math.min(window.devicePixelRatio || 1, cap);
     this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(w, h, false);
     this.composer.setPixelRatio(ratio);
     this.composer.setSize(w, h);
+    const shadow = phone ? 512 : 1024;
+    if (this.sun.shadow.mapSize.x !== shadow) {
+      this.sun.shadow.mapSize.set(shadow, shadow);
+      this.sun.shadow.map?.dispose();
+      this.sun.shadow.map = null;
+    }
+    this.bloom.strength = phone ? 0.08 : 0.22;
+    this.bloom.enabled = !phone;
+    this.renderer.toneMappingExposure = phone ? 1.24 : 1.05;
   }
 
   prepareTemplates() {
@@ -1339,10 +1376,12 @@ export class Game {
 
   updateCamera(wall) {
     const look = this.input.consumeLook();
+    const phone = this.layoutMode === 'port' || this.layoutMode === 'land';
     if (this.mode === 'play') {
       this.camYaw -= look.x * 0.0022;
-      this.camPitch = clamp(this.camPitch - look.y * 0.0016, -0.35, 1.05);
-      this.camDist = clamp(this.camDist + look.wheel * 0.55, 4.2, 18);
+      this.camPitch = clamp(this.camPitch - look.y * 0.0016, phone ? -0.55 : -0.35, phone ? 0.85 : 1.05);
+      const minDist = this.layoutMode === 'port' ? 8.5 : this.layoutMode === 'land' ? 7.4 : 4.2;
+      this.camDist = clamp(this.camDist + look.wheel * 0.55, minDist, 18);
     }
     const focus = this.focus();
     if (this.vehicle && this.mode === 'play') {
@@ -1351,15 +1390,26 @@ export class Game {
     let dist = this.camDist;
     if (this.vehicle?.kind === 'plane') dist = Math.max(dist, 14);
     else if (this.vehicle?.kind === 'heli') dist = Math.max(dist, 11);
-    else if (this.vehicle) dist = Math.max(dist, 8);
+    else if (this.vehicle) dist = Math.max(dist, phone ? 9.2 : 8);
     const cp = Math.cos(this.camPitch);
     const sp = Math.sin(this.camPitch);
     let cx = focus.x - Math.sin(this.camYaw) * cp * dist;
     let cz = focus.z - Math.cos(this.camYaw) * cp * dist;
-    let cy = focus.y + 1.6 - sp * dist;
-    if (cy < 0.45) cy = 0.45;
+    let cy = focus.y + (phone ? 2.05 : 1.6) - sp * dist;
+    const floorY = phone ? 1.8 : 0.45;
+    if (cy < floorY) cy = floorY;
     this.camera.position.set(cx, cy, cz);
-    this.camera.lookAt(focus.x, focus.y + 1.25, focus.z);
+    const lookH = phone ? 1.45 : 1.25;
+    this.camera.lookAt(focus.x, focus.y + lookH, focus.z);
+    if (phone) {
+      this.fill.color.set(0xfff1dc);
+      this.fill.intensity = 1.2;
+      this.fill.position.set(cx + 1.6, cy + 1.1, cz + 1.4);
+      this.fill.target.position.set(focus.x, focus.y + 1.3, focus.z);
+    } else {
+      this.fill.color.set(0x88b4ff);
+      this.fill.intensity = 0.25;
+    }
     this.sky.position.copy(this.camera.position);
   }
 
@@ -1369,8 +1419,10 @@ export class Game {
     const az = this.tod * Math.PI * 2;
     const day = clamp(elev, 0, 1);
     const focus = this.focus();
+    const phone = this.layoutMode === 'port' || this.layoutMode === 'land';
     this.sun.intensity = 0.18 + day * 2.35;
-    this.hemi.intensity = 0.22 + day * 0.5;
+    this.hemi.intensity = (0.22 + day * 0.5) * (phone ? 1.75 : 1);
+    this.renderer.toneMappingExposure = phone ? 1.24 : 1.05;
     this.sun.position.set(focus.x + Math.cos(az) * 70, 10 + Math.max(0.15, elev) * 80, focus.z + Math.sin(az) * 36);
     this.sun.target.position.set(focus.x, 0, focus.z);
     this.sun.shadow.camera.updateProjectionMatrix();
