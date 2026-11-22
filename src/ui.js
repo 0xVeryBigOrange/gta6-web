@@ -1,0 +1,458 @@
+import { COINS, HEADLINES, MISSIONS } from './config.js';
+import { fmtNum, fmtUsd } from './util.js';
+
+export function createUI(root) {
+  root.innerHTML = `
+    <canvas id="view"></canvas>
+    <div id="hud">
+      <div class="brand panel"><b>VICE CHAIN 3D</b><small>GTA6 Web版 · 🍊 大橙子</small></div>
+      <div id="ticker" class="panel"><div class="track" id="ticker-track"></div></div>
+      <div id="stars" class="panel"><div id="star-row"></div><small id="headline"></small></div>
+      <div id="objective" class="panel"></div>
+      <div id="wallet" class="panel"></div>
+      <div id="minimap-wrap"><canvas id="minimap" width="180" height="180"></canvas></div>
+      <div id="prompt" class="panel"></div>
+      <div id="speedo"></div>
+      <div id="fps"></div>
+      <div id="toasts"></div>
+    </div>
+    <div id="title" class="overlay on">
+      <div class="title-card panel">
+        <div style="font-size:42px">🍊</div>
+        <h1>VICE <span>CHAIN</span></h1>
+        <div class="tag">GTA6 Web版 · 里昂尼达链上假日</div>
+        <div class="brand-line">大橙子 · @0xVeryBigOrange</div>
+        <div class="actions">
+          <button class="primary" id="btn-new" type="button">新游戏</button>
+          <button class="ghost" id="btn-continue" type="button">继续游戏</button>
+          <button class="ghost" id="btn-help-title" type="button">操作说明</button>
+        </div>
+        <p class="fine">原创恶搞，与任何游戏发行商无关。城市、车辆与角色均为程序生成。<br/>不连接真实钱包，不涉及真实资金。行情只读，交易发生在本地存档里。</p>
+      </div>
+    </div>
+    <div id="pause" class="overlay">
+      <div class="menu-card panel">
+        <h2>暂停</h2>
+        <p id="pause-stats" class="fine"></p>
+        <div class="actions">
+          <button class="primary" id="btn-resume" type="button">继续</button>
+          <button class="ghost" id="btn-help" type="button">操作说明</button>
+          <button class="ghost" id="btn-save" type="button">立即存档</button>
+          <button class="ghost" id="btn-sound" type="button">音效：开</button>
+          <button class="ghost" id="btn-quit" type="button">保存并回标题</button>
+        </div>
+      </div>
+    </div>
+    <div id="help" class="overlay">
+      <div class="menu-card panel">
+        <h2>操作说明</h2>
+        <ul class="help-list">
+          <li>W A S D / 方向键：行走，驾车时加油、刹车与转向</li>
+          <li>Shift：奔跑</li>
+          <li>鼠标移动：转动视角。点击画面锁定鼠标，滚轮缩放</li>
+          <li>F：上车 / 下车。征用路人的车会增加通缉</li>
+          <li>E：交易所、任务终端、车行、房产、拉盘</li>
+          <li>M：任务列表 · H：帮助 · Esc：暂停 · 空格：喇叭</li>
+          <li>手机：左下摇杆移动，右半屏滑动看四周</li>
+        </ul>
+        <p class="fine">打开菜单时城市时间会暂停。进度写入浏览器 localStorage。</p>
+        <button class="primary" id="btn-help-close" type="button">知道了</button>
+      </div>
+    </div>
+    <div id="modal" class="overlay">
+      <div class="modal-card panel" id="modal-body"></div>
+    </div>
+    <div id="touch">
+      <div id="joy"><div id="knob"></div></div>
+      <div id="lookpad"></div>
+      <div class="touch-buttons">
+        <button type="button" id="t-run">奔跑</button>
+        <button type="button" id="t-car">上车</button>
+        <button type="button" id="t-use">互动</button>
+        <button type="button" id="t-mission">任务</button>
+        <button type="button" id="t-pause">暂停</button>
+      </div>
+    </div>
+  `;
+
+  const $ = (id) => root.querySelector(id);
+  const canvas = $('#view');
+  const minimap = $('#minimap');
+  let headlineIdx = 0;
+
+  function toast(text) {
+    const stack = $('#toasts');
+    while (stack.children.length >= 3) stack.firstChild.remove();
+    const el = document.createElement('div');
+    el.className = 'toast';
+    el.textContent = text;
+    stack.appendChild(el);
+    setTimeout(() => el.remove(), 2800);
+  }
+
+  const api = {
+    canvas,
+    minimap,
+    minimapCtx: minimap.getContext('2d'),
+    toast,
+    setPlayVisible(on) {
+      $('#hud').classList.toggle('on', on);
+      $('#title').classList.toggle('on', !on);
+    },
+    showTitle() {
+      $('#pause').classList.remove('on');
+      $('#help').classList.remove('on');
+      $('#modal').classList.remove('on');
+      $('#title').classList.add('on');
+      $('#hud').classList.remove('on');
+    },
+    setContinueEnabled(on) {
+      $('#btn-continue').disabled = !on;
+    },
+    showPause(stats) {
+      $('#pause-stats').textContent = stats;
+      $('#pause').classList.add('on');
+    },
+    hidePause() {
+      $('#pause').classList.remove('on');
+    },
+    showHelp() {
+      $('#help').classList.add('on');
+    },
+    hideHelp() {
+      $('#help').classList.remove('on');
+    },
+    helpOpen() {
+      return $('#help').classList.contains('on');
+    },
+    pauseOpen() {
+      return $('#pause').classList.contains('on');
+    },
+    modalOpen() {
+      return $('#modal').classList.contains('on');
+    },
+    closeModal() {
+      $('#modal').classList.remove('on');
+      $('#modal-body').innerHTML = '';
+    },
+    setObjective(text) {
+      const el = $('#objective');
+      el.style.display = text ? 'block' : 'none';
+      el.textContent = text || '';
+    },
+    setPrompt(text) {
+      const el = $('#prompt');
+      el.style.display = text ? 'block' : 'none';
+      el.textContent = text || '';
+    },
+    setSpeed(text) {
+      $('#speedo').textContent = text || '';
+    },
+    setFps(n) {
+      $('#fps').textContent = `${n} FPS`;
+    },
+    setStars(level) {
+      const row = $('#star-row');
+      let html = '';
+      for (let i = 1; i <= 5; i += 1) html += `<span class="${i <= level ? 'on' : ''}">${i <= level ? '★' : '☆'}</span>`;
+      row.innerHTML = html;
+    },
+    setHeadline() {
+      $('#headline').textContent = HEADLINES[headlineIdx % HEADLINES.length];
+      headlineIdx += 1;
+    },
+    setTicker(prices, source, hot) {
+      const bits = COINS.map((coin) => {
+        const price = prices[coin.id];
+        const cls = coin.id === 'ORNG' && hot ? 'hot' : '';
+        return `<span class="${cls}">${coin.tick} $${fmtNum(price, coin.priceDec)}</span>`;
+      }).join('   ·   ');
+      const text = `${bits}    ·    行情 ${source}${hot ? '    ·    大橙子币拉盘中' : ''}`;
+      $('#ticker-track').innerHTML = `${text}　　${text}`;
+    },
+    setWallet(model) {
+      const lines = [`<div>现金 <strong>${fmtUsd(model.usd)}</strong></div>`];
+      for (const coin of COINS) {
+        lines.push(`<div><span style="color:${coin.color}">${coin.tick}</span> ${fmtNum(model.bal[coin.id], coin.dec)}</div>`);
+      }
+      lines.push(`<div>净值 <strong>${fmtUsd(model.net)}</strong></div>`);
+      lines.push('<button class="link" type="button" id="btn-open-ex">打开交易所</button>');
+      $('#wallet').innerHTML = lines.join('');
+      $('#btn-open-ex').onclick = () => api.onOpenExchange?.();
+    },
+    setSoundLabel(on) {
+      $('#btn-sound').textContent = `音效：${on ? '开' : '关'}`;
+    },
+    openExchange(model) {
+      const body = $('#modal-body');
+      body.innerHTML = '';
+      const h2 = document.createElement('h2');
+      h2.textContent = '橙子交易所';
+      const sub = document.createElement('p');
+      sub.className = 'fine source';
+      sub.textContent = `参考价来自 ${model.source}。大橙子币 ORNG 是游戏内模因币。买卖只改本地存档。`;
+      body.append(h2, sub);
+      const amount = document.createElement('input');
+      amount.type = 'number';
+      amount.min = '0';
+      amount.step = 'any';
+      amount.value = '1';
+      amount.setAttribute('aria-label', '数量');
+      const label = document.createElement('div');
+      label.className = 'row';
+      const span = document.createElement('span');
+      span.textContent = '数量（枚）';
+      label.append(span, amount);
+      body.append(label);
+      for (const coin of COINS) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        const left = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'coin-name';
+        name.textContent = `${coin.name} ${coin.tick}`;
+        const meta = document.createElement('div');
+        meta.className = 'fine';
+        meta.textContent = `持有 ${fmtNum(model.bal[coin.id], coin.dec)} · $${fmtNum(model.prices[coin.id], coin.priceDec)}`;
+        left.append(name, meta);
+        const actions = document.createElement('div');
+        const buy = document.createElement('button');
+        buy.className = 'tiny';
+        buy.type = 'button';
+        buy.textContent = '买入';
+        const sell = document.createElement('button');
+        sell.className = 'tiny';
+        sell.type = 'button';
+        sell.textContent = '全部卖出';
+        buy.onclick = () => api.onTrade?.(coin.id, 'buy', Number(amount.value));
+        sell.onclick = () => api.onTrade?.(coin.id, 'sell', model.bal[coin.id]);
+        actions.append(buy, document.createTextNode(' '), sell);
+        row.append(left, actions);
+        body.append(row);
+      }
+      const close = document.createElement('button');
+      close.className = 'ghost';
+      close.type = 'button';
+      close.textContent = '离开';
+      close.style.marginTop = '12px';
+      close.onclick = () => api.onCloseModal?.();
+      body.append(close);
+      $('#modal').classList.add('on');
+    },
+    openMissions(model) {
+      const body = $('#modal-body');
+      body.innerHTML = '';
+      const h2 = document.createElement('h2');
+      h2.textContent = '任务终端';
+      const sub = document.createElement('p');
+      sub.className = 'fine';
+      sub.textContent = model.active
+        ? `进行中：${model.activeName}`
+        : '一次一单。完成后可以再接。';
+      body.append(h2, sub);
+      for (const mission of MISSIONS) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        const left = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'coin-name';
+        const done = model.done.includes(mission.id);
+        name.textContent = `${mission.name}${done ? ' · 已完成' : ''}`;
+        const desc = document.createElement('div');
+        desc.className = 'fine';
+        desc.textContent = `${mission.desc} 报酬 ${mission.reward}`;
+        left.append(name, desc);
+        const btn = document.createElement('button');
+        btn.className = 'tiny';
+        btn.type = 'button';
+        btn.textContent = model.active === mission.id ? '放弃' : '接受';
+        btn.disabled = model.active && model.active !== mission.id;
+        btn.onclick = () => {
+          if (model.active === mission.id) api.onAbandon?.();
+          else api.onAcceptMission?.(mission.id);
+        };
+        row.append(left, btn);
+        body.append(row);
+      }
+      const close = document.createElement('button');
+      close.className = 'ghost';
+      close.type = 'button';
+      close.textContent = '关闭';
+      close.style.marginTop = '12px';
+      close.onclick = () => api.onCloseModal?.();
+      body.append(close);
+      $('#modal').classList.add('on');
+    },
+    openShop(model) {
+      const body = $('#modal-body');
+      body.innerHTML = '';
+      const h2 = document.createElement('h2');
+      h2.textContent = model.title;
+      const sub = document.createElement('p');
+      sub.className = 'fine';
+      sub.textContent = `现金 ${fmtUsd(model.usd)}。可用现金或任一币种按现价结算。`;
+      body.append(h2, sub);
+      for (const item of model.items) {
+        const wrap = document.createElement('div');
+        wrap.style.padding = '8px 0';
+        wrap.style.borderBottom = '1px solid rgba(255,255,255,0.08)';
+        const name = document.createElement('div');
+        name.className = 'coin-name';
+        name.textContent = item.owned ? `${item.name} · 已拥有` : `${item.name} · ${fmtUsd(item.price)}`;
+        const desc = document.createElement('div');
+        desc.className = 'fine';
+        desc.textContent = item.blurb;
+        wrap.append(name, desc);
+        if (!item.owned && item.price > 0) {
+          const pay = document.createElement('div');
+          pay.className = 'pay-row';
+          const cash = document.createElement('button');
+          cash.className = 'tiny';
+          cash.type = 'button';
+          cash.textContent = '现金';
+          cash.disabled = model.usd < item.price;
+          cash.onclick = () => api.onBuy?.(item.id, 'USD');
+          pay.append(cash);
+          for (const coin of COINS) {
+            const cost = item.price / model.prices[coin.id];
+            const b = document.createElement('button');
+            b.className = 'tiny';
+            b.type = 'button';
+            b.textContent = `${coin.tick} ${fmtNum(cost, coin.dec)}`;
+            b.disabled = model.bal[coin.id] + 1e-9 < cost;
+            b.onclick = () => api.onBuy?.(item.id, coin.id);
+            pay.append(b);
+          }
+          wrap.append(pay);
+        }
+        body.append(wrap);
+      }
+      const close = document.createElement('button');
+      close.className = 'ghost';
+      close.type = 'button';
+      close.textContent = '离开';
+      close.style.marginTop = '12px';
+      close.onclick = () => api.onCloseModal?.();
+      body.append(close);
+      $('#modal').classList.add('on');
+    },
+    bindTouch(pad) {
+      const coarse = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+      const touch = $('#touch');
+      const show = () => touch.classList.toggle('on', coarse && $('#hud').classList.contains('on'));
+      api.setPlayVisible = (on) => {
+        $('#hud').classList.toggle('on', on);
+        $('#title').classList.toggle('on', !on);
+        show();
+      };
+      const joy = $('#joy');
+      const knob = $('#knob');
+      let active = null;
+      const place = (clientX, clientY) => {
+        const rect = joy.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        let dx = clientX - cx;
+        let dy = clientY - cy;
+        const max = rect.width / 2 - 8;
+        const mag = Math.hypot(dx, dy) || 1;
+        if (mag > max) {
+          dx = (dx / mag) * max;
+          dy = (dy / mag) * max;
+        }
+        knob.style.left = `${rect.width / 2 + dx - 27}px`;
+        knob.style.top = `${rect.height / 2 + dy - 27}px`;
+        pad.x = dx / max;
+        pad.y = -dy / max;
+      };
+      joy.addEventListener('pointerdown', (e) => {
+        active = e.pointerId;
+        joy.setPointerCapture(e.pointerId);
+        place(e.clientX, e.clientY);
+      });
+      joy.addEventListener('pointermove', (e) => {
+        if (e.pointerId !== active) return;
+        place(e.clientX, e.clientY);
+      });
+      const release = (e) => {
+        if (active !== null && e.pointerId !== active) return;
+        active = null;
+        pad.x = 0;
+        pad.y = 0;
+        knob.style.left = '37px';
+        knob.style.top = '37px';
+      };
+      joy.addEventListener('pointerup', release);
+      joy.addEventListener('pointercancel', release);
+
+      const look = $('#lookpad');
+      let lookId = null;
+      let lx = 0;
+      let ly = 0;
+      look.addEventListener('pointerdown', (e) => {
+        lookId = e.pointerId;
+        lx = e.clientX;
+        ly = e.clientY;
+        look.setPointerCapture(e.pointerId);
+      });
+      look.addEventListener('pointermove', (e) => {
+        if (e.pointerId !== lookId) return;
+        pad.lookX += (e.clientX - lx) * 1.4;
+        pad.lookY += (e.clientY - ly) * 1.4;
+        lx = e.clientX;
+        ly = e.clientY;
+      });
+      look.addEventListener('pointerup', () => {
+        lookId = null;
+      });
+
+      const hold = (id, key) => {
+        const btn = $(id);
+        const on = (v) => {
+          pad[key] = v;
+        };
+        btn.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          if (key === 'run') on(true);
+          else pad[key] = true;
+        });
+        btn.addEventListener('pointerup', () => {
+          if (key === 'run') on(false);
+        });
+        btn.addEventListener('pointerleave', () => {
+          if (key === 'run') on(false);
+        });
+      };
+      hold('#t-run', 'run');
+      hold('#t-car', 'car');
+      hold('#t-use', 'interact');
+      hold('#t-mission', 'mission');
+      hold('#t-pause', 'pause');
+      show();
+    },
+    onNew: null,
+    onContinue: null,
+    onResume: null,
+    onQuit: null,
+    onSave: null,
+    onToggleSound: null,
+    onOpenExchange: null,
+    onTrade: null,
+    onAcceptMission: null,
+    onAbandon: null,
+    onBuy: null,
+    onCloseModal: null,
+  };
+
+  $('#btn-new').onclick = () => api.onNew?.();
+  $('#btn-continue').onclick = () => api.onContinue?.();
+  $('#btn-help-title').onclick = () => api.showHelp();
+  $('#btn-help').onclick = () => api.showHelp();
+  $('#btn-help-close').onclick = () => api.hideHelp();
+  $('#btn-resume').onclick = () => api.onResume?.();
+  $('#btn-save').onclick = () => api.onSave?.();
+  $('#btn-quit').onclick = () => api.onQuit?.();
+  $('#btn-sound').onclick = () => api.onToggleSound?.();
+  api.setHeadline();
+  return api;
+}
