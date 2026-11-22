@@ -5,6 +5,8 @@ export function createAudio() {
   let sirenGain = null;
   let engine = null;
   let engineGain = null;
+  let radio = null;
+  let city = null;
 
   function context() {
     if (!ctx) {
@@ -109,6 +111,47 @@ export function createAudio() {
       }
       engine.frequency.setTargetAtTime(48 + Math.min(80, speed * 3.2), ac.currentTime, 0.1);
       engineGain.gain.setTargetAtTime(0.018, ac.currentTime, 0.1);
+    },
+    setBed(mode) {
+      if (!enabled || mode === 'off') {
+        if (radio && ctx) radio.gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.1);
+        if (city && ctx) city.gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.1);
+        return;
+      }
+      const ac = context();
+      if (!ac) return;
+      if (!radio) {
+        const gain = ac.createGain();
+        gain.gain.value = 0;
+        const filter = ac.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = 900;
+        gain.connect(filter);
+        filter.connect(ac.destination);
+        const oscs = [196, 247, 294].map((freq) => {
+          const osc = ac.createOscillator();
+          osc.type = 'triangle';
+          osc.frequency.value = freq;
+          osc.connect(gain);
+          osc.start();
+          return osc;
+        });
+        radio = { gain, oscs };
+      }
+      if (!city) {
+        const gain = ac.createGain();
+        gain.gain.value = 0;
+        const osc = ac.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = 82;
+        osc.connect(gain);
+        gain.connect(ac.destination);
+        osc.start();
+        city = { gain, osc };
+      }
+      const inCar = mode === 'car';
+      radio.gain.gain.setTargetAtTime(inCar ? 0.012 : 0.0001, ac.currentTime, 0.2);
+      city.gain.gain.setTargetAtTime(mode === 'foot' ? 0.01 : 0.0001, ac.currentTime, 0.25);
     },
   };
 }

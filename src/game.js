@@ -25,6 +25,7 @@ import {
 import { getOrngMult, getPriceSource, getPrices, refreshPrices, setOrngMult, tickSimulated } from './prices.js';
 import { loadSave, writeSave } from './save.js';
 import { angNorm, clamp, dist2, fmtNum, fmtUsd, mulberry32 } from './util.js';
+import { ACTIVITIES, GUIDE, RACE_GATES, dailyFor, levelFromRep, routeOnRoads } from './citylife.js';
 
 const WEAPONS = {
   fist: { name: '拳头', dmg: 24, cd: 0.48, range: 2.3 },
@@ -88,7 +89,15 @@ export class Game {
     this.police = [];
     this.guards = [];
     this.sparks = [];
-    this.player = { x: SPOTS.spawn.x, z: SPOTS.spawn.z, y: 0, yaw: 0, speed: 0, hp: 100, armor: 25 };
+    this.player = { x: SPOTS.spawn.x, z: SPOTS.spawn.z, y: 0, vy: 0, yaw: 0, speed: 0, glide: 0, hp: 100, armor: 25 };
+    this.guideStep = 0;
+    this.rep = 0;
+    this.finishedJobs = new Set();
+    this.race = null;
+    this.taxi = null;
+    this.atmUse = 0;
+    this.eventTimer = 20;
+    this.daily = null;
     this.vehicle = null;
     this.rng = mulberry32(11);
     this.wireUi();
@@ -142,6 +151,7 @@ export class Game {
           fire: !!spec.fire,
           boost: !!spec.boost,
           descend: !!spec.descend,
+          jump: !!spec.jump,
         };
       },
       clearHold: () => {
@@ -375,6 +385,7 @@ export class Game {
       alive: true,
       team: 'civ',
       state: 'walk',
+      behavior: 'walk',
       brave: this.rng() > 0.7,
       armed: false,
       speed: 0,
@@ -388,6 +399,9 @@ export class Game {
       placed: false,
       dummy,
     };
+    actor.model.traverse((obj) => {
+      if (obj.isMesh) obj.castShadow = false;
+    });
     actor.play('Idle');
     return npc;
   }
@@ -405,8 +419,8 @@ export class Game {
     const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.16), rifleMat);
     stock.position.set(0, -0.02, -0.12);
     this.rifle.add(stock);
-    const mount = this.actor.hand || this.actor.model;
-    mount.add(this.gun, this.rifle);
+    this.scene.add(this.gun, this.rifle);
+    this.dressHero(this.actor);
     this.gun.visible = false;
     this.rifle.visible = false;
 
@@ -420,16 +434,51 @@ export class Game {
     this.makeVehicle('heli', -380, 239, Math.PI / 2, { personal: true });
     this.makeVehicle('plane', -510, -390, Math.PI / 2, { personal: true });
     this.makeVehicle('police', 86, -36, Math.PI, { police: true });
-    for (let i = 0; i < 8; i += 1) {
-      const id = ['sedan', 'taxi', 'suv'][i % 3];
+    const lite = Math.min(window.innerWidth, window.innerHeight) <= 520 || window.innerWidth <= 700;
+    const trafficN = lite ? 8 : 14;
+    for (let i = 0; i < trafficN; i += 1) {
+      const id = ['sedan', 'taxi', 'suv', 'sport'][i % 4];
       const car = this.makeVehicle(id, 0, 0, 0, { traffic: true });
+      car.mesh.traverse((obj) => {
+        if (obj.isMesh) obj.castShadow = false;
+      });
       this.parkOnRoad(car);
     }
+    for (let i = 0; i < (lite ? 4 : 8); i += 1) {
+      const id = ['sedan', 'taxi', 'suv'][i % 3];
+      const car = this.makeVehicle(id, 0, 0, 0, { parked: true });
+      car.parked = true;
+      car.mesh.traverse((obj) => {
+        if (obj.isMesh) obj.castShadow = false;
+      });
+      this.parkOnRoad(car);
+      const seg = this.world.roads[car.seg % this.world.roads.length];
+      const dx = seg.bx - seg.ax;
+      const dz = seg.bz - seg.az;
+      const len = Math.hypot(dx, dz) || 1;
+      car.x += (-dz / len) * (seg.half + 1.6);
+      car.z += (dx / len) * (seg.half + 1.6);
+      car.yaw = Math.atan2(dx, dz);
+    }
 
-    const kinds = ['female', 'worker', 'male', 'suit', 'female', 'worker'];
-    for (let i = 0; i < 14; i += 1) {
+    const kinds = ['female', 'worker', 'male', 'suit', 'female', 'worker', 'male', 'suit'];
+    const behaviors = ['walk', 'jog', 'chat', 'idle'];
+    const crowd = lite ? 12 : 24;
+    for (let i = 0; i < crowd; i += 1) {
       const npc = this.makeNpc(kinds[i % kinds.length]);
+      npc.behavior = behaviors[i % behaviors.length];
       this.placeWalker(npc, i);
+      if (i < 10) {
+        const ang = (i / 10) * Math.PI * 2;
+        npc.x = Math.cos(ang) * (6 + (i % 3) * 2);
+        npc.z = 24 + Math.sin(ang) * (5 + (i % 2) * 3);
+        npc.tx = npc.x + 6;
+        npc.tz = npc.z + 4;
+      } else if (i % 5 === 0) {
+        npc.x = 96 + (i % 4) * 6;
+        npc.z = 208;
+        npc.behavior = 'idle';
+      }
       this.npcs.push(npc);
     }
     for (let i = 0; i < 4; i += 1) {
@@ -504,6 +553,7 @@ export class Game {
     );
     this.caseMesh.visible = false;
     this.scene.add(this.caseMesh);
+    this.buildLife();
     const sparkGeo = new THREE.SphereGeometry(0.12, 6, 6);
     const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffc14a });
     for (let i = 0; i < 8; i += 1) {
@@ -579,6 +629,8 @@ export class Game {
       this.updateNpcs(dt);
       this.updateWanted(dt);
       this.updateMission(dt);
+      this.updateLife(dt);
+      this.updateGps();
       this.updateCoins();
       this.invuln = Math.max(0, this.invuln - dt);
       this.combatWantedCd = Math.max(0, this.combatWantedCd - dt);
@@ -610,6 +662,7 @@ export class Game {
         fire: this.script.fire,
         boost: this.script.boost,
         descend: this.script.descend,
+        jump: this.script.jump,
       };
     }
     return {
@@ -617,6 +670,7 @@ export class Game {
       fire: this.input.fireHeld() || this.fireLatch,
       boost: this.input.boost(),
       descend: this.input.descend(),
+      jump: this.input.jumpHeld(),
     };
   }
 
@@ -649,21 +703,48 @@ export class Game {
   }
 
   updatePlayer(dt, ctrl) {
-    const speed = ctrl.boost ? 6.5 : 3.15;
+    const moving = Math.hypot(ctrl.axis.x, ctrl.axis.y) > 0.08;
+    const wish = moving ? (ctrl.boost ? 8.8 : 5.25) : 0;
+    const rate = wish > this.player.glide ? 18 : 11;
+    this.player.glide = THREE.MathUtils.damp(this.player.glide, wish, rate, dt);
     const yaw = this.camYaw;
     const sin = Math.sin(yaw);
     const cos = Math.cos(yaw);
     const mx = sin * ctrl.axis.y + cos * ctrl.axis.x;
     const mz = cos * ctrl.axis.y - sin * ctrl.axis.x;
-    const nx = this.player.x + mx * speed * dt;
-    const nz = this.player.z + mz * speed * dt;
-    const next = this.world.slide(this.player.x, this.player.z, nx, nz, 0.4, 'walk');
-    const moved = Math.hypot(next.x - this.player.x, next.z - this.player.z);
+    if (moving) {
+      const face = Math.atan2(mx, mz);
+      this.player.yaw += angNorm(face - this.player.yaw) * Math.min(1, dt * 16);
+      this.player.pushX = mx;
+      this.player.pushZ = mz;
+    }
+    const airborne = this.player.y > 0.08;
+    const spd = airborne ? Math.max(this.player.glide, 4.2) : this.player.glide;
+    const ix = moving ? mx : (this.player.pushX || 0);
+    const iz = moving ? mz : (this.player.pushZ || 0);
+    const nx = this.player.x + ix * spd * dt;
+    const nz = this.player.z + iz * spd * dt;
+    const next = this.world.slide(this.player.x, this.player.z, nx, nz, 0.38, 'walk');
+    const blocked = Math.hypot(next.x - nx, next.z - nz) > 0.12;
+    if (blocked && airborne && spd > 3) {
+      this.player.x = nx;
+      this.player.z = nz;
+    } else {
+      this.player.x = next.x;
+      this.player.z = next.z;
+    }
+    if (ctrl.jump && this.player.y <= 0.04) {
+      this.player.vy = blocked ? 8.2 : 7.5;
+      this.actor?.play('Roll', { once: true, fade: 0.06 });
+      this.animLock = 0.32;
+    }
+    this.player.vy -= 26 * dt;
+    this.player.y = Math.max(0, this.player.y + this.player.vy * dt);
+    if (this.player.y <= 0) this.player.vy = 0;
+    const moved = Math.hypot(this.player.x - (this.player.prevX ?? this.player.x), this.player.z - (this.player.prevZ ?? this.player.z));
+    this.player.prevX = this.player.x;
+    this.player.prevZ = this.player.z;
     this.player.speed = dt > 0 ? moved / dt : 0;
-    this.player.x = next.x;
-    this.player.z = next.z;
-    this.player.y = 0;
-    if (this.player.speed > 0.35) this.player.yaw = Math.atan2(mx, mz);
   }
 
   updateVehicle(v, dt, ctrl) {
@@ -694,9 +775,9 @@ export class Game {
     const throttle = ctrl.axis.y;
     if (throttle > 0.05) v.speed += accel * throttle * dt;
     else if (throttle < -0.05) v.speed -= accel * 0.7 * dt;
-    else v.speed *= Math.pow(0.42, dt);
-    v.speed = clamp(v.speed, -max * 0.32, max);
-    const steer = ctrl.axis.x * (v.kind === 'bike' ? 2.15 : 1.65);
+    else v.speed *= Math.pow(0.5, dt);
+    v.speed = clamp(v.speed, -max * 0.35, max);
+    const steer = ctrl.axis.x * (v.kind === 'bike' ? 2.7 : 2.2);
     if (Math.abs(v.speed) > 0.4) v.yaw += steer * dt * clamp(v.speed, -10, 10) / 10;
     v.roll = v.kind === 'bike' ? -ctrl.axis.x * Math.min(1, Math.abs(v.speed) / 12) * 0.45 : 0;
     v.pitch = 0;
@@ -739,7 +820,7 @@ export class Game {
     v.yaw += ctrl.axis.x * dt * 1.35;
     v.pitch = THREE.MathUtils.lerp(v.pitch, -ctrl.axis.y * 0.4, Math.min(1, dt * 3));
     v.roll = THREE.MathUtils.lerp(v.roll, ctrl.axis.x * 0.28, Math.min(1, dt * 3));
-    v.speed = ctrl.axis.y * 20;
+    v.speed = ctrl.axis.y * 30;
     const nx = v.x + Math.sin(v.yaw) * v.speed * dt;
     const nz = v.z + Math.cos(v.yaw) * v.speed * dt;
     const mode = v.y > 4 ? 'fly' : 'walk';
@@ -767,7 +848,8 @@ export class Game {
       const dx = seg.bx - seg.ax;
       const dz = seg.bz - seg.az;
       const len = Math.hypot(dx, dz) || 1;
-      v.speed = 9;
+      const red = this.signalRed && this.signals?.some((light) => Math.hypot(light.x - v.x, light.z - v.z) < 12);
+      v.speed = red ? 1.4 : 16;
       v.segT += v.dir * (v.speed * dt) / len;
       if (v.segT > 1 || v.segT < 0) {
         v.segT = clamp(v.segT, 0, 1);
@@ -851,12 +933,21 @@ export class Game {
         }
       } else if (npc.state !== 'fight') {
         npc.timer -= dt;
-        const toward = Math.atan2(npc.tx - npc.x, npc.tz - npc.z);
-        this.stepNpc(npc, toward, 1.6, dt);
-        if (npc.timer <= 0 || Math.hypot(npc.tx - npc.x, npc.tz - npc.z) < 1.4) {
-          npc.tx = npc.x + (this.rng() - 0.5) * 24;
-          npc.tz = npc.z + (this.rng() - 0.5) * 24;
-          npc.timer = 3 + this.rng() * 4;
+        if (npc.behavior === 'idle' || npc.behavior === 'chat') {
+          npc.speed = 0;
+          if (npc.behavior === 'chat' && npc.animLock <= 0 && Math.floor(this.time + npc.x) % 7 === 0) {
+            npc.actor.play('Wave', { once: true, fade: 0.08 });
+            npc.animLock = 1.15;
+          }
+        } else {
+          const pace = npc.behavior === 'jog' ? 3.6 : 2.35;
+          const toward = Math.atan2(npc.tx - npc.x, npc.tz - npc.z);
+          this.stepNpc(npc, toward, pace, dt);
+          if (npc.timer <= 0 || Math.hypot(npc.tx - npc.x, npc.tz - npc.z) < 1.4) {
+            npc.tx = npc.x + (this.rng() - 0.5) * 28;
+            npc.tz = npc.z + (this.rng() - 0.5) * 28;
+            npc.timer = 2.4 + this.rng() * 3.5;
+          }
         }
         if (this.weapon !== 'fist' && d < 10 && this.rng() > 0.4 && npc.team === 'civ') {
           npc.state = 'flee';
@@ -1319,6 +1410,8 @@ export class Game {
         this.audio.coin();
         const meta = COINS.find((c) => c.id === coin.drop.id);
         this.ui.toast(`捡到 ${fmtNum(coin.drop.amt, meta.dec)} ${coin.drop.id}`);
+        this.noteDaily('coins');
+        this.rep += 2;
         this.walletSig = '';
       }
     }
@@ -1330,23 +1423,25 @@ export class Game {
       const sink = this.vehicle.kind === 'car' ? -0.55 : 0;
       this.actor.model.position.set(0, this.vehicle.def.seat + sink, 0.05);
       this.actor.model.rotation.set(0, 0, 0);
-      if (this.animLock <= 0 && this.actor.current !== 'SitDown' && this.actor.current !== 'Death') {
-        this.actor.play('SitDown', { once: true, hold: true });
+      const seated = this.actor.current === 'SitDown' || this.actor.current === 'Idle' || this.actor.current === 'Death';
+      if (this.animLock <= 0 && !seated) {
+        this.actor.play(this.actor.actions.SitDown ? 'SitDown' : 'Idle', { once: true, hold: true });
       }
     } else {
       if (this.actor.model.parent !== this.scene) this.scene.add(this.actor.model);
-      this.actor.model.position.set(this.player.x, 0, this.player.z);
+      this.actor.model.position.set(this.player.x, this.player.y, this.player.z);
       this.actor.model.rotation.set(0, this.player.yaw, 0);
       if (this.downTimer <= 0) locomotion(this.actor, this.player.speed, this.animLock);
     }
     this.gun.visible = !this.vehicle && this.weapon === 'pistol';
     this.rifle.visible = !this.vehicle && this.weapon === 'rifle';
     this.actor.mixer.update(step);
+    this.placeWeapon(this.weapon === 'rifle' ? this.rifle : this.gun);
     for (const npc of this.npcs) {
       if (!npc.actor.model.visible) continue;
       npc.actor.model.position.set(npc.x, 0, npc.z);
       npc.actor.model.rotation.y = npc.yaw;
-      npc.actor.mixer.update(step);
+      if (Math.hypot(npc.x - this.player.x, npc.z - this.player.z) < 72) npc.actor.mixer.update(step);
     }
     for (const v of this.vehicles) {
       const far = Math.hypot(v.x - this.player.x, v.z - this.player.z) > 220 && v !== this.vehicle;
@@ -1380,35 +1475,45 @@ export class Game {
     if (this.mode === 'play') {
       this.camYaw -= look.x * 0.0022;
       this.camPitch = clamp(this.camPitch - look.y * 0.0016, phone ? -0.55 : -0.35, phone ? 0.85 : 1.05);
-      const minDist = this.layoutMode === 'port' ? 8.5 : this.layoutMode === 'land' ? 7.4 : 4.2;
+      const minDist = this.layoutMode === 'port' ? 8.5 : this.layoutMode === 'land' ? 7.4 : 2.8;
       this.camDist = clamp(this.camDist + look.wheel * 0.55, minDist, 18);
     }
     const focus = this.focus();
     if (this.vehicle && this.mode === 'play') {
       this.camYaw += angNorm(this.vehicle.yaw - this.camYaw) * Math.min(1, wall * 2.4);
     }
-    let dist = this.camDist;
+    if (!this.lookSmooth) this.lookSmooth = new THREE.Vector3(focus.x, focus.y, focus.z);
+    const ease = 1 - Math.exp(-9 * Math.max(0.001, wall));
+    this.lookSmooth.x += (focus.x - this.lookSmooth.x) * ease;
+    this.lookSmooth.y += (focus.y - this.lookSmooth.y) * ease;
+    this.lookSmooth.z += (focus.z - this.lookSmooth.z) * ease;
+    let dist = this.camDist + Math.min(phone ? 1.6 : 3.2, Math.abs(this.player.speed) * 0.16);
     if (this.vehicle?.kind === 'plane') dist = Math.max(dist, 14);
     else if (this.vehicle?.kind === 'heli') dist = Math.max(dist, 11);
     else if (this.vehicle) dist = Math.max(dist, phone ? 9.2 : 8);
     const cp = Math.cos(this.camPitch);
     const sp = Math.sin(this.camPitch);
-    let cx = focus.x - Math.sin(this.camYaw) * cp * dist;
-    let cz = focus.z - Math.cos(this.camYaw) * cp * dist;
-    let cy = focus.y + (phone ? 2.05 : 1.6) - sp * dist;
+    const fx = this.lookSmooth.x;
+    const fy = this.lookSmooth.y;
+    const fz = this.lookSmooth.z;
+    let cx = fx - Math.sin(this.camYaw) * cp * dist;
+    let cz = fz - Math.cos(this.camYaw) * cp * dist;
+    let cy = fy + (phone ? 2.05 : 1.6) - sp * dist;
     const floorY = phone ? 1.8 : 0.45;
     if (cy < floorY) cy = floorY;
     this.camera.position.set(cx, cy, cz);
-    const lookH = phone ? 1.45 : 1.25;
-    this.camera.lookAt(focus.x, focus.y + lookH, focus.z);
+    const lookH = phone ? 1.45 : 1.35;
+    this.camera.lookAt(fx, fy + lookH, fz);
     if (phone) {
       this.fill.color.set(0xfff1dc);
       this.fill.intensity = 1.2;
       this.fill.position.set(cx + 1.6, cy + 1.1, cz + 1.4);
       this.fill.target.position.set(focus.x, focus.y + 1.3, focus.z);
     } else {
-      this.fill.color.set(0x88b4ff);
-      this.fill.intensity = 0.25;
+      this.fill.color.set(0xfff4e4);
+      this.fill.intensity = 0.72;
+      this.fill.position.set(cx + 2.2, cy + 1.4, cz + 1.2);
+      this.fill.target.position.set(fx, fy + 1.45, fz);
     }
     this.sky.position.copy(this.camera.position);
   }
@@ -1467,6 +1572,8 @@ export class Game {
     }
     this.audio.setSiren(this.mode === 'play' ? this.wanted : 0);
     this.audio.setEngine(this.mode === 'play' && this.vehicle ? Math.abs(this.vehicle.speed) : 0);
+    const bed = this.mode !== 'play' ? 'off' : this.vehicle?.kind === 'car' || this.vehicle?.kind === 'bike' ? 'car' : 'foot';
+    this.audio.setBed(bed);
   }
 
   currentPrompt() {
@@ -1528,6 +1635,13 @@ export class Game {
   }
 
   interact() {
+    if (this.tryActivity()) return;
+    if (!this.mission && this.guideStep < GUIDE.length && GUIDE[this.guideStep].until === 'interact') {
+      this.guideStep += 1;
+      this.rep += 40;
+      this.audio.success();
+      this.ui.toast('教程完成。按 M 接任务，或按 E 做路边的活。');
+    }
     if (this.mission?.id === 'pump' && this.mission.phase === 'goto') {
       const d = dist2(this.player.x, this.player.z, SPOTS.pump.x, SPOTS.pump.z);
       if (d < SPOTS.pump.r * SPOTS.pump.r) {
@@ -1615,6 +1729,7 @@ export class Game {
     this.player.x = x;
     this.player.z = z;
     this.player.y = 0;
+    this.player.vy = 0;
     this.player.yaw = car.yaw;
     car.speed = 0;
     this.vehicle = null;
@@ -1626,14 +1741,18 @@ export class Game {
       this.vehicle.x = x;
       this.vehicle.z = z;
       if (y != null) this.vehicle.y = y;
-      this.player.x = x;
-      this.player.z = z;
-      this.player.y = this.vehicle.y;
-      return;
-    }
     this.player.x = x;
     this.player.z = z;
-    if (y != null) this.player.y = y;
+    this.player.y = this.vehicle.y;
+    this.player.vy = 0;
+    this.lookSmooth?.set(x, this.player.y, z);
+    return;
+  }
+  this.player.x = x;
+  this.player.z = z;
+  this.player.vy = 0;
+  if (y != null) this.player.y = y;
+  this.lookSmooth?.set(x, this.player.y, z);
   }
 
   trade(id, side, amount) {
@@ -1871,6 +1990,13 @@ export class Game {
     this.collected = new Set();
     this.wanted = 0;
     this.mission = null;
+    this.guideStep = 0;
+    this.rep = 0;
+    this.finishedJobs = new Set();
+    this.race = null;
+    this.taxi = null;
+    this.goalHint = null;
+    this.daily = dailyFor(new Date().toISOString().slice(0, 10));
     this.player.hp = 100;
     this.player.armor = 25;
     this.weapon = 'fist';
@@ -1882,7 +2008,7 @@ export class Game {
     this.objectiveSig = '';
     this.walletSig = '';
     this.setMode('play');
-    this.ui.toast('欢迎来到 Vice Chain。F 上车，1/2/3 切换武器。');
+    this.ui.toast('跟着橙色光柱。Shift 冲刺，空格跳跃，F 上车。');
     this.save();
   }
 
@@ -1905,6 +2031,10 @@ export class Game {
     this.collected = new Set(data.collected || []);
     this.wanted = data.wanted || 0;
     this.mission = data.mission || null;
+    this.rep = data.rep || 0;
+    this.guideStep = data.guideStep ?? (data.done?.length ? GUIDE.length : 0);
+    this.finishedJobs = new Set(data.finishedJobs || []);
+    this.daily = data.daily || null;
     this.player.hp = data.hp ?? 100;
     this.player.armor = data.armor ?? 0;
     this.weapon = data.weapon || 'fist';
@@ -1932,6 +2062,10 @@ export class Game {
       collected: [...this.collected],
       wanted: this.wanted,
       mission: this.mission ? structuredClone(this.mission) : null,
+      rep: this.rep,
+      guideStep: this.guideStep,
+      finishedJobs: [...this.finishedJobs],
+      daily: this.daily,
       orngMult: getOrngMult(),
       hp: this.player.hp,
       armor: this.player.armor,
@@ -1966,6 +2100,411 @@ export class Game {
     return npc;
   }
 
+  dressHero(actor) {
+    const cloth = new THREE.MeshStandardMaterial({ color: 0xff6a14, roughness: 0.55 });
+    const bag = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.26, 0.14), cloth);
+    bag.castShadow = true;
+    bag.position.set(0, 1.18, -0.2);
+    actor.model.add(bag);
+    const chain = new THREE.Mesh(
+      new THREE.TorusGeometry(0.09, 0.012, 6, 14),
+      new THREE.MeshStandardMaterial({ color: 0xffd56a, metalness: 0.85, roughness: 0.22 }),
+    );
+    chain.rotation.x = Math.PI / 2;
+    chain.position.set(0, 1.4, 0.1);
+    actor.model.add(chain);
+  }
+
+  placeWeapon(mesh) {
+    const hand = this.actor?.hand;
+    if (!mesh || !hand) return;
+    hand.updateWorldMatrix(true, false);
+    if (!this.weaponPos) {
+      this.weaponPos = new THREE.Vector3();
+      this.weaponQuat = new THREE.Quaternion();
+      this.weaponOff = new THREE.Vector3();
+    }
+    hand.getWorldPosition(this.weaponPos);
+    hand.getWorldQuaternion(this.weaponQuat);
+    this.weaponOff.set(0.02, 0.03, 0.08).applyQuaternion(this.weaponQuat);
+    mesh.position.copy(this.weaponPos).add(this.weaponOff);
+    mesh.quaternion.copy(this.weaponQuat);
+    mesh.scale.set(1, 1, 1);
+  }
+
+  buildLife() {
+    this.signals = [
+      [8, 8],
+      [66, 8],
+      [-50, 8],
+      [8, 66],
+    ].map(([x, z]) => {
+      const pole = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 3.4, 0.18),
+        new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.8 }),
+      );
+      const lamp = new THREE.Mesh(
+        new THREE.BoxGeometry(0.42, 0.42, 0.42),
+        new THREE.MeshStandardMaterial({ color: 0x39ff7a, emissive: 0x1ecf5a, emissiveIntensity: 0.9 }),
+      );
+      pole.position.set(x, 1.7, z);
+      lamp.position.set(x, 3.45, z);
+      this.scene.add(pole, lamp);
+      return { x, z, lamp };
+    });
+    const birdGeo = new THREE.ConeGeometry(0.18, 0.55, 4);
+    birdGeo.rotateX(Math.PI / 2);
+    this.birds = new THREE.InstancedMesh(
+      birdGeo,
+      new THREE.MeshBasicMaterial({ color: 0xf7f3ea }),
+      8,
+    );
+    this.birds.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.scene.add(this.birds);
+    this.birdDummy = new THREE.Object3D();
+    const routeMax = 64;
+    const routeGeo = new THREE.BufferGeometry();
+    routeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(routeMax * 2 * 3), 3));
+    const routeIndex = [];
+    for (let i = 0; i < routeMax - 1; i += 1) {
+      const a = i * 2;
+      routeIndex.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
+    routeGeo.setIndex(routeIndex);
+    this.route = new THREE.Mesh(
+      routeGeo,
+      new THREE.MeshBasicMaterial({
+        color: 0xffd15a,
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+      }),
+    );
+    this.route.frustumCulled = false;
+    this.route.renderOrder = 2;
+    this.route.visible = false;
+    this.scene.add(this.route);
+    this.routeMax = routeMax;
+    this.routeCount = 0;
+    this.jobMarks = ACTIVITIES.map((job) => {
+      const mesh = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.85),
+        new THREE.MeshStandardMaterial({ color: 0x3df0ff, emissive: 0x1490aa, emissiveIntensity: 0.7 }),
+      );
+      mesh.position.set(job.x, 2.2, job.z);
+      this.scene.add(mesh);
+      return { job, mesh };
+    });
+    this.raceMarks = RACE_GATES.map((gate) => {
+      const mesh = new THREE.Mesh(
+        new THREE.TorusGeometry(3.2, 0.16, 6, 16),
+        new THREE.MeshStandardMaterial({ color: 0xffe14a, emissive: 0xffb000, emissiveIntensity: 0.8 }),
+      );
+      mesh.position.set(gate.x, 1.6, gate.z);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      return mesh;
+    });
+    const flyer = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(3.2, 0.45, 0.7),
+      new THREE.MeshStandardMaterial({ color: 0xf4f7fb, roughness: 0.4 }),
+    );
+    const wing = new THREE.Mesh(
+      new THREE.BoxGeometry(0.4, 0.08, 6.4),
+      new THREE.MeshStandardMaterial({ color: 0xff8a1e, roughness: 0.45 }),
+    );
+    flyer.add(body, wing);
+    this.airliner = flyer;
+    this.scene.add(flyer);
+    const skiff = this.templates.boat.clone(true);
+    skiff.traverse((obj) => {
+      if (obj.isMesh) obj.castShadow = false;
+    });
+    this.skiff = skiff;
+    this.scene.add(skiff);
+  }
+
+  level() {
+    return levelFromRep(this.rep);
+  }
+
+  noteDaily(kind) {
+    if (!this.daily || this.daily.id !== kind || this.daily.have >= this.daily.need) return;
+    this.daily.have += 1;
+    if (this.daily.have >= this.daily.need) {
+      this.rep += 25;
+      this.usd += 500;
+      this.walletSig = '';
+      this.ui.toast(`今日挑战完成：${this.daily.name}，+$500`);
+      this.audio.success();
+    }
+  }
+
+  showMarker(target, text) {
+    if (target) {
+      this.beacon.visible = true;
+      this.beacon.position.set(target.x, (target.y || 0) + 2.6, target.z);
+      this.beacon.rotation.y = this.time;
+      this.goal = target;
+    }
+    if (text && text !== this.objectiveSig) {
+      this.objectiveSig = text;
+      this.ui.setObjective(text);
+    }
+  }
+
+  updateLife(dt) {
+    if (!this.daily) this.daily = dailyFor(new Date().toISOString().slice(0, 10));
+    this.signalRed = Math.floor(this.time / 6) % 2 === 0;
+    for (const light of this.signals || []) {
+      const color = this.signalRed ? 0xff3344 : 0x39ff7a;
+      light.lamp.material.color.setHex(color);
+      light.lamp.material.emissive.setHex(color);
+    }
+    const here = this.focus();
+    if (this.birds) {
+      for (let i = 0; i < 8; i += 1) {
+        const a = this.time * 0.7 + i;
+        this.birdDummy.position.set(here.x + Math.cos(a) * (18 + i * 3), 14 + (i % 3) * 2, here.z + Math.sin(a * 1.3) * (16 + i));
+        this.birdDummy.lookAt(here.x, 12, here.z);
+        this.birdDummy.updateMatrix();
+        this.birds.setMatrixAt(i, this.birdDummy.matrix);
+      }
+      this.birds.instanceMatrix.needsUpdate = true;
+    }
+    if (this.airliner) {
+      const a = this.time * 0.08;
+      this.airliner.position.set(Math.cos(a) * 220, 48, Math.sin(a) * 180);
+      this.airliner.rotation.y = -a;
+    }
+    if (this.skiff) {
+      const t = (this.time * 4) % 180;
+      this.skiff.position.set(-420 + t, 0.2, 260);
+      this.skiff.rotation.y = Math.PI / 2;
+    }
+    for (const mark of this.jobMarks || []) {
+      const done = this.finishedJobs.has(mark.job.id) && mark.job.kind !== 'atm' && mark.job.kind !== 'guns' && mark.job.kind !== 'clothes';
+      mark.mesh.visible = !done && Math.hypot(mark.job.x - here.x, mark.job.z - here.z) < 220;
+      mark.mesh.rotation.y = this.time;
+      mark.mesh.position.y = 2.1 + Math.sin(this.time * 2 + mark.job.x) * 0.15;
+    }
+    if (this.race) {
+      const gate = RACE_GATES[this.race.i];
+      this.raceMarks.forEach((mesh, i) => {
+        mesh.visible = i === this.race.i;
+      });
+      if (gate && dist2(here.x, here.z, gate.x, gate.z) < 6 * 6) {
+        this.race.i += 1;
+        if (this.race.i >= RACE_GATES.length) {
+          const seconds = Math.max(1, this.time - this.race.t0);
+          this.race = null;
+          this.usd += 1200;
+          this.rep += 30;
+          this.finishedJobs.add('race');
+          this.noteDaily('race');
+          this.walletSig = '';
+          this.audio.success();
+          this.ui.toast(`竞速完成 ${seconds.toFixed(1)} 秒，+$1,200`);
+        }
+      }
+    } else this.raceMarks?.forEach((mesh) => {
+      mesh.visible = false;
+    });
+    if (this.mission) return;
+    if (this.guideStep < GUIDE.length) {
+      const step = GUIDE[this.guideStep];
+      let done = false;
+      if (step.until === 'vehicle') done = !!this.vehicle;
+      else if (step.until !== 'interact') done = dist2(here.x, here.z, step.x, step.z) < step.r * step.r;
+      if (done) {
+        this.guideStep += 1;
+        this.ui.toast(this.guideStep >= GUIDE.length ? '教程完成' : '好，下一步');
+        if (this.guideStep >= GUIDE.length) {
+          this.rep += 40;
+          this.audio.success();
+        }
+      }
+    }
+    if (this.guideStep < GUIDE.length) {
+      const step = GUIDE[this.guideStep];
+      this.showMarker(step, step.text);
+      return;
+    }
+    this.eventTimer -= dt;
+    if (this.eventTimer <= 0) {
+      this.eventTimer = 70 + this.rng() * 40;
+      if (this.rng() > 0.5) {
+        this.ui.toast('巨鲸抛售：大橙子币跳水，交易所可以抄底');
+        this.goalHint = { name: '去交易所看巨鲸抛售', x: SPOTS.exchange.x, z: SPOTS.exchange.z, r: 6 };
+      } else {
+        this.ui.toast('有人在街上跑路，追上他');
+        this.goalHint = { name: '追上跑路的人', x: here.x + 18, z: here.z + 8, r: 4, id: 'runner' };
+      }
+    }
+    const goal = this.nearestJob(here) || this.goalHint || { name: '按 M 接冷钱包专送', x: SPOTS.kiosk.x, z: SPOTS.kiosk.z, r: 5 };
+    const daily = this.daily.have >= this.daily.need ? '今日已完成' : `今日 ${this.daily.have}/${this.daily.need} ${this.daily.name}`;
+    this.showMarker(goal, `等级 ${this.level()} · 下一步：${goal.name} · ${daily}`);
+  }
+
+  nearestJob(here) {
+    let best = null;
+    let bestD = Infinity;
+    for (const job of ACTIVITIES) {
+      if (this.finishedJobs.has(job.id) && job.kind !== 'atm' && job.kind !== 'guns' && job.kind !== 'clothes' && job.kind !== 'stunt') continue;
+      const d = dist2(here.x, here.z, job.x, job.z);
+      if (d < bestD) {
+        bestD = d;
+        best = job;
+      }
+    }
+    return best;
+  }
+
+  updateGps() {
+    if (!this.route || !this.beacon?.visible) {
+      if (this.route) this.route.visible = false;
+      this.routeCount = 0;
+      this.routePoints = null;
+      return;
+    }
+    const here = this.focus();
+    const points = routeOnRoads(this.world.roads, here.x, here.z, this.beacon.position.x, this.beacon.position.z);
+    const attr = this.route.geometry.getAttribute('position');
+    const maxPts = this.routeMax || 64;
+    const n = Math.min(points.length, maxPts);
+    const half = 0.55;
+    for (let i = 0; i < n; i += 1) {
+      const prev = points[Math.max(0, i - 1)];
+      const next = points[Math.min(points.length - 1, i + 1)];
+      let dx = next.x - prev.x;
+      let dz = next.z - prev.z;
+      const len = Math.hypot(dx, dz) || 1;
+      dx /= len;
+      dz /= len;
+      attr.setXYZ(i * 2, points[i].x - dz * half, 0.42, points[i].z + dx * half);
+      attr.setXYZ(i * 2 + 1, points[i].x + dz * half, 0.42, points[i].z - dx * half);
+    }
+    if (n > 0) {
+      for (let i = n; i < maxPts; i += 1) {
+        attr.copyAt(i * 2, attr, (n - 1) * 2);
+        attr.copyAt(i * 2 + 1, attr, (n - 1) * 2 + 1);
+      }
+    }
+    attr.needsUpdate = true;
+    this.route.geometry.setDrawRange(0, Math.max(0, (n - 1) * 6));
+    this.route.visible = n > 1;
+    this.routeCount = n;
+    this.routePoints = points;
+  }
+
+  tryActivity() {
+    const here = this.focus();
+    for (const job of ACTIVITIES) {
+      if (dist2(here.x, here.z, job.x, job.z) > job.r * job.r) continue;
+      if (job.kind === 'atm') {
+        if (this.time < this.atmUse) {
+          this.ui.toast('这台 ATM 还在结算');
+          return true;
+        }
+        this.atmUse = this.time + 18;
+        this.usd += 220;
+        this.rep += 8;
+        this.walletSig = '';
+        this.noteDaily('atm');
+        this.audio.coin();
+        this.ui.toast('ATM 兑出 $220');
+        return true;
+      }
+      if (job.kind === 'race') {
+        this.race = { i: 0, t0: this.time };
+        this.ui.toast('竞速开始，穿过黄色环');
+        return true;
+      }
+      if (job.kind === 'taxi') {
+        if (!this.vehicle) {
+          this.ui.toast('先上车，再来接这一单');
+          return true;
+        }
+        this.taxi = { drop: job.drop };
+        this.finishedJobs.add(job.id);
+        this.ui.toast('乘客上车了。送到海滩公寓');
+        this.goalHint = { name: '把乘客送到海滩', x: job.drop.x, z: job.drop.z, r: 8, id: 'taxi-drop' };
+        return true;
+      }
+      if (job.kind === 'guns') {
+        if (this.usd < 400) {
+          this.ui.toast('补弹需要 $400');
+          return true;
+        }
+        this.usd -= 400;
+        this.ammo.pistol.res += 36;
+        this.ammo.rifle.res += 60;
+        this.walletSig = '';
+        this.audio.buy();
+        this.ui.toast('子弹补上了');
+        return true;
+      }
+      if (job.kind === 'clothes') {
+        this.rep += 4;
+        this.ui.toast('换了一件更橙的外套');
+        this.audio.buy();
+        return true;
+      }
+      if (job.kind === 'gallery') {
+        if (this.finishedJobs.has(job.id)) {
+          this.ui.toast('画廊已经空了');
+          return true;
+        }
+        this.finishedJobs.add(job.id);
+        this.bal.BTC += 0.01;
+        this.rep += 22;
+        this.wanted = Math.max(this.wanted, 2);
+        this.ensurePolice(true);
+        this.walletSig = '';
+        this.audio.success();
+        this.ui.toast('NFT 被你卷走了。SEC 盯上了画廊');
+        return true;
+      }
+      if (job.kind === 'stunt') {
+        const fast = Math.abs(this.vehicle?.speed || 0) > 28;
+        if (!fast) {
+          this.ui.toast('速度不够。冲过这道门再按 E');
+          return true;
+        }
+        this.finishedJobs.add(job.id);
+        this.usd += 800;
+        this.rep += 18;
+        this.walletSig = '';
+        this.audio.success();
+        this.ui.toast('特技门通过，+$800');
+        return true;
+      }
+    }
+    if (this.goalHint?.id === 'taxi-drop' && this.taxi && dist2(here.x, here.z, this.taxi.drop.x, this.taxi.drop.z) < 10 * 10) {
+      this.taxi = null;
+      this.goalHint = null;
+      this.usd += 450;
+      this.rep += 16;
+      this.walletSig = '';
+      this.audio.success();
+      this.ui.toast('乘客下车，车费 $450');
+      return true;
+    }
+    if (this.goalHint?.id === 'runner' && dist2(here.x, here.z, this.goalHint.x, this.goalHint.z) < 5 * 5) {
+      this.goalHint = null;
+      this.usd += 300;
+      this.rep += 12;
+      this.walletSig = '';
+      this.ui.toast('追上了跑路的人，搜出 $300');
+      return true;
+    }
+    return false;
+  }
+
   drawMinimap() {
     const ctx = this.ui.minimapCtx;
     const w = this.ui.minimap.width;
@@ -1985,6 +2524,18 @@ export class Game {
       ctx.beginPath();
       ctx.moveTo(toX(seg.ax), toY(seg.az));
       ctx.lineTo(toX(seg.bx), toY(seg.bz));
+      ctx.stroke();
+    }
+    if (this.routePoints?.length) {
+      ctx.strokeStyle = '#ffd15a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      this.routePoints.forEach((p, i) => {
+        const x = toX(p.x);
+        const y = toY(p.z);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
       ctx.stroke();
     }
     if (this.beacon?.visible) {
@@ -2034,6 +2585,11 @@ export class Game {
       source: getPriceSource(),
       buildings: this.world?.buildings?.length || 0,
       npcs: this.npcs.filter((npc) => npc.alive && npc.actor.model.visible).length,
+      guideStep: this.guideStep,
+      rep: this.rep,
+      level: this.level(),
+      route: this.routeCount || 0,
+      jumpY: this.player.y,
     };
   }
 }
