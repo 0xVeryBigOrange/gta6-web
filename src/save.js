@@ -5,7 +5,7 @@ export function loadSave() {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
-    if (!data || data.v !== 1 || !data.bal) return null;
+    if (!data || data.v !== 2 || !data.bal) return null;
     return data;
   } catch {
     return null;

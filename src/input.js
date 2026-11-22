@@ -13,7 +13,7 @@ const MOVE = new Set([
 export function createInput(canvas) {
   const keys = new Set();
   const edges = new Set();
-  const mouse = { dx: 0, dy: 0, wheel: 0 };
+  const mouse = { dx: 0, dy: 0, wheel: 0, left: false, click: false };
   const pad = {
     x: 0,
     y: 0,
@@ -51,11 +51,14 @@ export function createInput(canvas) {
   }
   function pointerDown(e) {
     if (e.button !== 0) return;
+    mouse.left = true;
     if (e.target !== canvas) return;
+    mouse.click = true;
     dragging = true;
     canvas.setPointerCapture?.(e.pointerId);
   }
-  function pointerUp() {
+  function pointerUp(e) {
+    if (!e || e.button === 0) mouse.left = false;
     dragging = false;
   }
 
@@ -106,6 +109,18 @@ export function createInput(canvas) {
     horn() {
       return keys.has('Space') || pad.horn;
     },
+    boost() {
+      return keys.has('ShiftLeft') || keys.has('ShiftRight') || pad.run;
+    },
+    descend() {
+      return keys.has('ControlLeft') || keys.has('ControlRight');
+    },
+    fireHeld() {
+      return !!pad.fire || (mouse.left && document.pointerLockElement === canvas);
+    },
+    clicked() {
+      return mouse.click;
+    },
     pressed(code) {
       return edges.has(code);
     },
@@ -114,6 +129,7 @@ export function createInput(canvas) {
       mouse.dx = 0;
       mouse.dy = 0;
       mouse.wheel = 0;
+      mouse.click = false;
       pad.lookX = 0;
       pad.lookY = 0;
       pad.interact = false;
