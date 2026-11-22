@@ -1,8 +1,12 @@
 import { SAVE_KEY } from './config.js';
 
-export function loadSave() {
+export function slotKey(userId) {
+  return userId ? `${SAVE_KEY}:${userId}` : SAVE_KEY;
+}
+
+export function loadSave(userId = null) {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(slotKey(userId));
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (!data || data.v !== 2 || !data.bal) return null;
@@ -12,8 +16,8 @@ export function loadSave() {
   }
 }
 
-export function writeSave(data) {
-  localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+export function writeSave(data, userId = null) {
+  localStorage.setItem(slotKey(userId), JSON.stringify(data));
 }
 
 export function clearSave() {
