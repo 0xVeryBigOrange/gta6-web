@@ -6,10 +6,13 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 const BASE = import.meta.env.BASE_URL;
 
 const OUTFITS = {
-  male: { skin: 0xd7a06a, hair: 0x1b120d, cloth: 0xff6a14, pants: 0x1e2433, mix: 1 },
-  female: { skin: 0xe4b48e, hair: 0x4a2a1c, cloth: 0xff4f92, pants: 0x2a1830, mix: 0.92 },
-  worker: { skin: 0xc68642, hair: 0x24160f, cloth: 0xe0a020, mix: 0.22 },
-  suit: { skin: 0xb98a62, hair: 0x141414, cloth: 0x1c2433, mix: 0.55 },
+  male: { skin: 0xd7a06a, hair: 0x1b120d, cloth: 0xff6a14, pants: 0x1e2433 },
+  female: { skin: 0xe8b898, hair: 0x4a2a1c, cloth: 0xff4f92, pants: 0x2a1830 },
+  worker: { skin: 0xc68642, hair: 0x24160f, cloth: 0xe0a020, pants: 0x314028 },
+  suit: { skin: 0xc49a74, hair: 0x141414, cloth: 0x1c3148, pants: 0x141820 },
+  classy: { skin: 0xc9a07a, hair: 0x9a9a9a, cloth: 0xf2f2f4, pants: 0x1a1c22 },
+  suitf: { skin: 0xe0b090, hair: 0x111111, cloth: 0xf4f0ea, pants: 0xc6a15a },
+  casual2: { skin: 0xf0c2a0, hair: 0x6a3418, cloth: 0xffe14a, pants: 0xff4fad },
 };
 
 const CLIP_ALIAS = {
@@ -21,15 +24,17 @@ const CLIP_ALIAS = {
 function paintMaterial(mat, outfit, meshName = '') {
   const next = mat.clone();
   const name = next.name || '';
+  const mesh = meshName || '';
   if (/skin_darker/i.test(name)) {
     next.color.setHex(outfit.skin);
     next.color.multiplyScalar(0.72);
-    next.roughness = 0.48;
+    next.roughness = 0.52;
     next.metalness = 0;
-  } else if (/skin/i.test(name)) {
+  } else if (/skin|face/i.test(name)) {
     next.color.setHex(outfit.skin);
+    if (/face/i.test(name)) next.color.offsetHSL(0, 0.02, 0.04);
     next.roughness = 0.5;
-    next.metalness = 0;
+    next.metalness = 0.02;
   } else if (/^eye$/i.test(name) || name === 'Eye') {
     next.color.setHex(0x16324a);
     next.emissive?.setHex(0x16324a);
@@ -37,22 +42,28 @@ function paintMaterial(mat, outfit, meshName = '') {
     next.roughness = 0.18;
   } else if (/hair|eyebrow|moustache/i.test(name)) {
     next.color.setHex(outfit.hair);
-    next.roughness = 0.48;
+    next.roughness = 0.55;
     next.metalness = 0;
-  } else if (outfit.pants != null && /leg/i.test(meshName)) {
-    next.color.setHex(outfit.pants);
-    next.roughness = 0.72;
+  } else if (/belt|shoe|feet/i.test(name) || /feet|shoe/i.test(mesh)) {
+    next.color.setHex(0x1a1a1a);
+    next.roughness = 0.5;
+    next.metalness = 0.15;
+  } else if (/pant/i.test(name) || /leg/i.test(mesh)) {
+    next.color.setHex(outfit.pants ?? 0x1e2433);
+    next.roughness = 0.74;
     next.metalness = 0.02;
-  } else if (/feet|shoe/i.test(meshName)) {
-    next.color.setHex(0x161616);
-    next.roughness = 0.6;
-    next.metalness = 0.08;
-  } else {
-    next.color.lerp(new THREE.Color(outfit.cloth), outfit.mix);
-    next.roughness = 0.62;
+  } else if (/shirt|vest|jacket/i.test(name)) {
+    next.color.setHex(outfit.cloth);
+    if (/vest/i.test(name)) next.color.multiplyScalar(0.82);
+    next.roughness = 0.66;
     next.metalness = 0.04;
+  } else if (/black/i.test(name)) {
+    next.color.setHex(outfit.cloth);
+    next.color.multiplyScalar(0.45);
+    next.roughness = 0.55;
+    next.metalness = 0.08;
   }
-  if ('envMapIntensity' in next) next.envMapIntensity = 0.45;
+  if ('envMapIntensity' in next) next.envMapIntensity = 0.55;
   return next;
 }
 
@@ -67,6 +78,14 @@ function aliasClips(clips) {
     const copy = clip.clone();
     copy.name = name;
     copy.tracks = copy.tracks.filter((track) => !track.name.endsWith('.scale'));
+    for (const track of copy.tracks) {
+      if (!/hips|root/i.test(track.name) || !track.name.endsWith('.position')) continue;
+      const values = track.values;
+      for (let i = 0; i < values.length; i += 3) {
+        values[i] = 0;
+        values[i + 2] = 0;
+      }
+    }
     out.push(copy);
   }
   return out;
@@ -93,7 +112,9 @@ function tuneStatic(root) {
     for (const mat of mats) {
       if (!mat) continue;
       if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
-      if ('envMapIntensity' in mat) mat.envMapIntensity = 0.7;
+      mat.roughness = Math.min(mat.roughness ?? 0.6, 0.55);
+      mat.metalness = Math.max(mat.metalness ?? 0, 0.12);
+      if ('envMapIntensity' in mat) mat.envMapIntensity = 1.05;
       mat.needsUpdate = true;
     }
   });
@@ -135,17 +156,11 @@ async function loadGltf(loader, url) {
 export async function loadGameAssets(renderer, onProgress) {
   const loader = new GLTFLoader();
   const jobs = [];
-  const peopleFiles = ['male', 'female', 'worker', 'suit'];
+  const peopleFiles = ['male', 'female', 'worker', 'suit', 'classy', 'suitf', 'casual2'];
   const carFiles = ['sedan', 'suv', 'hatchback-sports', 'police', 'taxi', 'race'];
-  const commercial = ['building-a', 'building-b', 'building-c', 'building-d', 'building-e', 'building-skyscraper-a', 'building-skyscraper-b', 'building-skyscraper-c'];
-  const suburban = ['building-type-a', 'building-type-b', 'building-type-c', 'building-type-d', 'building-type-e', 'building-type-f'];
-  const industrial = ['building-a', 'building-b', 'building-c', 'building-d'];
   const push = (key, url) => jobs.push({ key, url });
   for (const name of peopleFiles) push(`people:${name}`, `${BASE}models/people/${name}.glb`);
   for (const name of carFiles) push(`car:${name}`, `${BASE}models/car/${name}.glb`);
-  for (const name of commercial) push(`shop:${name}`, `${BASE}models/commercial/${name}.glb`);
-  for (const name of suburban) push(`house:${name}`, `${BASE}models/suburban/${name}.glb`);
-  for (const name of industrial) push(`industry:${name}`, `${BASE}models/industrial/${name}.glb`);
   push('boat', `${BASE}models/watercraft/boat-speed-a.glb`);
   push('palm', `${BASE}models/nature/tree_palmDetailedTall.glb`);
   push('palmTall', `${BASE}models/nature/tree_palmTall.glb`);
@@ -181,19 +196,6 @@ export async function loadGameAssets(renderer, onProgress) {
     cars[name] = root;
   }
 
-  const fitBuilding = (gltf, height, foot) => {
-    const root = gltf.scene.clone(true);
-    tuneStatic(root);
-    groundCenter(root, { axis: 'y', value: height, maxFoot: foot });
-    return root;
-  };
-
-  const shops = commercial.map((name) => fitBuilding(loaded[`shop:${name}`], name.includes('skyscraper') ? 46 : 13, name.includes('skyscraper') ? 18 : 15));
-  const towers = shops.filter((_, i) => commercial[i].includes('skyscraper'));
-  const blocks = shops.filter((_, i) => !commercial[i].includes('skyscraper'));
-  const houses = suburban.map((name) => fitBuilding(loaded[`house:${name}`], 8.2, 13));
-  const industry = industrial.map((name) => fitBuilding(loaded[`industry:${name}`], 12, 20));
-
   const boat = loaded.boat.scene.clone(true);
   tuneStatic(boat);
   groundCenter(boat, { axis: 'z', value: 6.2 });
@@ -222,10 +224,39 @@ export async function loadGameAssets(renderer, onProgress) {
   tuneStatic(parasol);
   groundCenter(parasol, { axis: 'y', value: 2.6 });
 
+  const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy?.() || 4);
+  const texLoader = new THREE.TextureLoader();
+  const loadSurface = async (url, colorSpace) => {
+    try {
+      const tex = await texLoader.loadAsync(url);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.colorSpace = colorSpace;
+      tex.anisotropy = aniso;
+      return tex;
+    } catch {
+      return null;
+    }
+  };
+  onProgress?.('地面');
+  const [asphalt, asphaltNor, sand, concrete, grass, plaster] = await Promise.all([
+    loadSurface(`${BASE}textures/asphalt.jpg`, THREE.SRGBColorSpace),
+    loadSurface(`${BASE}textures/asphalt_nor.jpg`, THREE.NoColorSpace),
+    loadSurface(`${BASE}textures/sand.jpg`, THREE.SRGBColorSpace),
+    loadSurface(`${BASE}textures/concrete.jpg`, THREE.SRGBColorSpace),
+    loadSurface(`${BASE}textures/grass.jpg`, THREE.SRGBColorSpace),
+    loadSurface(`${BASE}textures/plaster.jpg`, THREE.SRGBColorSpace),
+  ]);
+
   let environment = null;
   try {
     onProgress?.('天空');
-    const hdr = await new RGBELoader().loadAsync(`${BASE}models/sky/venice_sunset_1k.hdr`);
+    let hdr;
+    try {
+      hdr = await new RGBELoader().loadAsync(`${BASE}models/sky/miami_day_1k.hdr`);
+    } catch {
+      hdr = await new RGBELoader().loadAsync(`${BASE}models/sky/venice_sunset_1k.hdr`);
+    }
     const pmrem = new THREE.PMREMGenerator(renderer);
     environment = pmrem.fromEquirectangular(hdr).texture;
     hdr.dispose();
@@ -238,10 +269,7 @@ export async function loadGameAssets(renderer, onProgress) {
     people,
     cars,
     boat,
-    towers,
-    blocks,
-    houses,
-    industry,
+    surfaces: { asphalt, asphaltNor, sand, concrete, grass, plaster },
     palm,
     palmTall,
     pistol,

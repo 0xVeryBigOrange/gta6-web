@@ -96,13 +96,7 @@
 
 ## 素材
 
-允许再分发的免费模型，游戏里做了缩放和重新上色：
-
-- 角色：Quaternius Ultimate Modular Men（Casual、Worker、SWAT），CC0。带眼睛、眉毛、头发和 24 段动作（走、跑、待机、挥手、出拳、开枪、受击、倒地、翻滚）。经 [fatal-funnel-public](https://github.com/euuuuuuan/fatal-funnel-public/tree/main/packages/renderer/assets/models/quaternius-men) 里的 GLB 获取。原包说明见 [Quaternius Ultimate Modular Characters](https://quaternius.com/packs/ultimatemodularcharacters.html)。主角是橙色外套的 Casual，路人用同一套骨骼换了工人和特警外形。
-- 楼、车、船、棕榈、路灯、手枪：Kenney，CC0。经 [shorepine/kenney](https://github.com/shorepine/kenney) 镜像获取。车和楼用了各自套件里的 `Textures/colormap.png`。
-- 天空的环境光：Poly Haven `venice_sunset` 1k HDR，CC0。
-
-摩托、直升机和轻航是这个项目里做的原创机体，没有使用他人的飞机或摩托模型。道路、人行道、长椅、消防栓和水面也是项目内生成的。
+许可和出处写在 [CREDITS.md](CREDITS.md)。角色是 Quaternius Ultimate Animated Characters（CC0），楼是按迈阿密酒店画的立面，地面和天空用了 Poly Haven 的 CC0 贴图和 HDR。车、船、棕榈、路灯、手枪仍是 Kenney（CC0）。摩托、直升机和轻航是项目里做的机体。
 
 ## 本地运行
 

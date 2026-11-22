@@ -3,6 +3,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { createUI } from './ui.js';
 import { createInput } from './input.js';
 import { createAudio } from './audio.js';
@@ -48,7 +50,9 @@ const WEAPONS = {
   rifle: { name: '步枪', dmg: 16, cd: 0.1, range: 110, mag: 30 },
 };
 
-const PACK = { male: 'male', female: 'female', worker: 'worker', suit: 'suit' };
+const PACK = {
+  male: 'male', female: 'female', worker: 'worker', suit: 'suit', classy: 'classy', suitf: 'suitf', casual2: 'casual2',
+};
 
 export class Game {
   constructor(root) {
@@ -217,7 +221,7 @@ export class Game {
       throw error;
     }
     if (this.assets.environment) this.scene.environment = this.assets.environment;
-    this.world = buildWorld(this.scene, this.assets);
+    this.world = buildWorld(this.scene, this.assets, this.quality);
     this.prepareTemplates();
     this.spawnCast();
     this.ready = true;
@@ -235,8 +239,10 @@ export class Game {
 
   setupThree() {
     const lite = window.innerWidth <= 700 || (window.innerHeight <= 520 && window.innerWidth <= 1100);
+    this.quality = lite ? 'low' : 'high';
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0xd7c2a4, 0.00235);
+    this.scene.environmentIntensity = 1;
+    this.scene.fog = new THREE.FogExp2(0xc5dff2, 0.00105);
     this.camera = new THREE.PerspectiveCamera(62, 1, 0.1, 2200);
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.ui.canvas,
@@ -249,20 +255,21 @@ export class Game {
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.sun = new THREE.DirectionalLight(0xfff1dd, 2.5);
+    this.sun = new THREE.DirectionalLight(0xfff3df, lite ? 2.4 : 3.1);
     this.sun.castShadow = true;
-    const shadow = (window.innerWidth <= 700 || (window.innerHeight <= 520 && window.innerWidth <= 1100)) ? 512 : 1024;
+    const shadow = lite ? 512 : 2048;
+    const span = lite ? 42 : 70;
     this.sun.shadow.mapSize.set(shadow, shadow);
-    this.sun.shadow.camera.near = 2;
-    this.sun.shadow.camera.far = 140;
-    this.sun.shadow.camera.left = -48;
-    this.sun.shadow.camera.right = 48;
-    this.sun.shadow.camera.top = 48;
-    this.sun.shadow.camera.bottom = -48;
-    this.sun.shadow.bias = -0.00035;
-    this.sun.shadow.normalBias = 0.04;
+    this.sun.shadow.camera.near = 1;
+    this.sun.shadow.camera.far = lite ? 110 : 190;
+    this.sun.shadow.camera.left = -span;
+    this.sun.shadow.camera.right = span;
+    this.sun.shadow.camera.top = span;
+    this.sun.shadow.camera.bottom = -span;
+    this.sun.shadow.bias = -0.00025;
+    this.sun.shadow.normalBias = lite ? 0.05 : 0.03;
     this.scene.add(this.sun, this.sun.target);
-    this.hemi = new THREE.HemisphereLight(0xcfe6ff, 0x6a5438, 0.7);
+    this.hemi = new THREE.HemisphereLight(0xb7dcff, 0xc4a574, 0.85);
     this.scene.add(this.hemi);
     this.fill = new THREE.DirectionalLight(0x88b4ff, 0.25);
     this.scene.add(this.fill);
@@ -303,8 +310,10 @@ export class Game {
     this.scene.add(this.sky);
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(800, 600), 0.22, 0.45, 0.9);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(800, 600), 0.34, 0.42, 0.84);
     this.composer.addPass(this.bloom);
+    this.fxaa = new ShaderPass(FXAAShader);
+    this.composer.addPass(this.fxaa);
     this.composer.addPass(new OutputPass());
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -344,15 +353,19 @@ export class Game {
     this.renderer.setSize(w, h, false);
     this.composer.setPixelRatio(ratio);
     this.composer.setSize(w, h);
-    const shadow = phone ? 512 : 1024;
+    const shadow = phone ? 512 : 2048;
     if (this.sun.shadow.mapSize.x !== shadow) {
       this.sun.shadow.mapSize.set(shadow, shadow);
       this.sun.shadow.map?.dispose();
       this.sun.shadow.map = null;
     }
-    this.bloom.strength = phone ? 0.08 : 0.22;
+    this.bloom.strength = phone ? 0 : 0.34;
     this.bloom.enabled = !phone;
-    this.renderer.toneMappingExposure = phone ? 1.24 : 1.05;
+    if (this.fxaa) {
+      this.fxaa.enabled = !phone;
+      this.fxaa.uniforms.resolution.value.set(1 / (w * ratio), 1 / (h * ratio));
+    }
+    this.renderer.toneMappingExposure = phone ? 1.18 : 1.02;
   }
 
   prepareTemplates() {
@@ -502,7 +515,7 @@ export class Game {
       car.yaw = Math.atan2(dx, dz);
     }
 
-    const kinds = ['female', 'worker', 'male', 'suit', 'female', 'worker', 'male', 'suit'];
+    const kinds = ['female', 'worker', 'male', 'suit', 'casual2', 'classy', 'suitf', 'male'];
     const behaviors = ['walk', 'jog', 'chat', 'idle'];
     const crowd = lite ? 12 : 24;
     for (let i = 0; i < crowd; i += 1) {
@@ -1506,7 +1519,7 @@ export class Game {
     this.rifle.visible = !this.vehicle && this.weapon === 'rifle';
     this.actor.mixer.update(step);
     this.placeWeapon(this.weapon === 'rifle' ? this.rifle : this.gun);
-    if (this.localTag) this.localTag.position.y = this.vehicle ? 3.15 : 2.2;
+    if (this.localTag) this.localTag.position.y = this.vehicle ? 3.15 : 2.62;
     for (const npc of this.npcs) {
       if (!npc.actor.model.visible) continue;
       npc.actor.model.position.set(npc.x, 0, npc.z);
@@ -1595,18 +1608,29 @@ export class Game {
     const day = clamp(elev, 0, 1);
     const focus = this.focus();
     const phone = this.layoutMode === 'port' || this.layoutMode === 'land';
-    this.sun.intensity = 0.18 + day * 2.35;
-    this.hemi.intensity = (0.22 + day * 0.5) * (phone ? 1.75 : 1);
-    this.renderer.toneMappingExposure = phone ? 1.24 : 1.05;
-    this.sun.position.set(focus.x + Math.cos(az) * 70, 10 + Math.max(0.15, elev) * 80, focus.z + Math.sin(az) * 36);
+    const night = 1 - day;
+    this.sun.intensity = 0.08 + day * (phone ? 2.5 : 3.15);
+    this.sun.color.set(day > 0.25 ? 0xfff1d4 : 0x9eb6ff);
+    this.hemi.intensity = (0.16 + day * 0.7) * (phone ? 1.55 : 1);
+    this.hemi.color.set(day > 0.2 ? 0xb7dcff : 0x1a2040);
+    this.hemi.groundColor.set(day > 0.2 ? 0xc4a574 : 0x1a120c);
+    this.scene.environmentIntensity = 0.18 + day * 0.9;
+    this.renderer.toneMappingExposure = (phone ? 1.18 : 1.02) + night * 0.08;
+    this.sun.position.set(focus.x + Math.cos(az) * 80, 12 + Math.max(0.2, elev) * 90, focus.z + Math.sin(az) * 40);
     this.sun.target.position.set(focus.x, 0, focus.z);
     this.sun.shadow.camera.updateProjectionMatrix();
-    const horizon = new THREE.Color().setHSL(0.08, 0.5, 0.22 + day * 0.42);
-    const top = new THREE.Color().setHSL(0.57, 0.55, 0.08 + day * 0.42);
+    const horizon = new THREE.Color().setHSL(day > 0.18 ? 0.08 : 0.66, day > 0.18 ? 0.62 : 0.4, 0.05 + day * 0.58);
+    const top = new THREE.Color().setHSL(0.57, 0.72, 0.02 + day * 0.5);
     this.sky.material.uniforms.uTop.value.copy(top);
     this.sky.material.uniforms.uHorizon.value.copy(horizon);
-    this.sky.material.uniforms.uSun.value.set(Math.cos(az), Math.max(0.05, elev), Math.sin(az) * 0.6);
+    this.sky.material.uniforms.uSun.value.set(Math.cos(az), Math.max(0.02, elev), Math.sin(az) * 0.55);
     this.scene.fog.color.copy(horizon);
+    this.scene.fog.density = 0.00085 + night * 0.0015;
+    this.world?.setAtmosphere?.({
+      night,
+      sun: this.sky.material.uniforms.uSun.value,
+      horizon,
+    });
   }
 
   updateHud(dt) {
@@ -3080,7 +3104,7 @@ export class Game {
       } else {
         remote.actor.model.position.set(remote.x, remote.y, remote.z);
         remote.actor.model.rotation.y = remote.yaw;
-        if (remote.tag) remote.tag.position.y = 2.2;
+        if (remote.tag) remote.tag.position.y = 2.62;
       }
       locomotion(remote.actor, remote.car ? 0 : Math.min(6, speed * 8), 0);
       remote.actor.mixer.update(dt);
