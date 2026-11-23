@@ -28,6 +28,7 @@ import { getOrngMult, getPriceSource, getPrices, refreshPrices, setOrngMult, tic
 import { loadSave, writeSave } from './save.js';
 import { angNorm, clamp, dist2, fmtNum, fmtUsd, mulberry32 } from './util.js';
 import { ACTIVITIES, GUIDE, RACE_GATES, dailyFor, levelFromRep, routeOnRoads } from './citylife.js';
+import { ACHIEVEMENTS, freshQuests, gameDay, grantProgress, questById, restoreProgress } from './progress.js';
 import {
   cloud,
   createProfile,
@@ -117,6 +118,8 @@ export class Game {
     this.atmUse = 0;
     this.eventTimer = 20;
     this.daily = null;
+    this.progress = restoreProgress(null);
+    this.journalReturn = 'play';
     this.storyChapter = 0;
     this.asGuest = true;
     this.session = null;
@@ -164,6 +167,7 @@ export class Game {
     this.ui.onAuth = (form) => this.submitAuth(form);
     this.ui.onBoard = (tab) => this.openBoard(tab);
     this.ui.onBoardClose = () => this.closeBoard();
+    this.ui.onJournal = () => this.toggleJournal();
     this.ui.onCut = () => this.advanceCutscene();
     this.ui.setSoundLabel(true);
     this.ui.setAccountLine('还没登录。游客进度只留在这台设备。', false);
@@ -209,6 +213,9 @@ export class Game {
       signUp: (email, password, nickname) => this.submitAuth({ mode: 'register', email, password, nickname }),
       signIn: (email, password) => this.submitAuth({ mode: 'login', email, password }),
       setNick: (nickname) => this.submitAuth({ mode: 'nick', nickname }),
+      startVault: () => this.debugStartVault(),
+      grant: (track, amount = 1) => this.noteTrack(track, amount),
+      progress: () => this.progress,
     };
   }
 
@@ -607,6 +614,22 @@ export class Game {
     );
     this.caseMesh.visible = false;
     this.scene.add(this.caseMesh);
+    const vault = CHAPTERS.find((item) => item.id === 'story-vault');
+    const vaultMat = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.65, roughness: 0.32, emissive: 0x6a4a10, emissiveIntensity: 0.35 });
+    this.vaultDoor = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.6, 0.35), vaultMat);
+    this.vaultDoor.position.set(vault.door.x, 1.3, vault.door.z);
+    this.vaultDoor.visible = false;
+    this.scene.add(this.vaultDoor);
+    this.vaultBags = vault.bags.map((spot) => {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(0.7, 0.45, 0.4),
+        new THREE.MeshStandardMaterial({ color: 0xffd56a, roughness: 0.45, emissive: 0xaa7710, emissiveIntensity: 0.25 }),
+      );
+      mesh.position.set(spot.x, 0.45, spot.z);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      return mesh;
+    });
     this.buildLife();
     const sparkGeo = new THREE.SphereGeometry(0.12, 6, 6);
     const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffc14a });
@@ -742,11 +765,17 @@ export class Game {
   consumeKeys() {
     if (!this.ready) return;
     if (this.input.pressed('Escape')) {
+      if (this.mode === 'journal') {
+        this.closeJournal();
+        return;
+      }
       if (this.ui.modalOpen()) this.closeModal();
       else if (this.ui.helpOpen()) this.ui.hideHelp();
+      else if (this.mode === 'board') this.closeBoard();
       else if (this.mode === 'play') this.setMode('pause');
       else if (this.mode === 'pause') this.setMode('play');
     }
+    if (this.input.pressed('KeyJ')) this.toggleJournal();
     if (this.mode === 'cutscene' && (this.input.pressed('Space') || this.input.pressed('KeyE') || this.input.clicked())) {
       this.advanceCutscene();
       return;
@@ -826,6 +855,14 @@ export class Game {
     this.player.y = v.y;
     this.player.speed = Math.abs(v.speed);
     this.player.yaw = v.yaw;
+    if ((v.kind === 'car' || v.kind === 'bike') && Math.abs(v.speed) > 2) {
+      this.driveBuf = (this.driveBuf || 0) + Math.abs(v.speed) * dt;
+      if (this.driveBuf >= 100) {
+        const meters = Math.floor(this.driveBuf);
+        this.driveBuf -= meters;
+        this.noteTrack('drive', meters);
+      }
+    }
   }
 
   updateGround(v, dt, ctrl) {
@@ -1193,7 +1230,7 @@ export class Game {
     if (this.vehicle) this.exitVehicle();
     this.teleport(SPOTS.hospital.x, SPOTS.hospital.z, 0);
     this.ensurePolice(true);
-    const failed = this.mission && ['sec', 'rug', 'harbor'].includes(this.mission.id);
+    const failed = this.mission && (['sec', 'rug', 'harbor'].includes(this.mission.id) || this.mission.id === 'story-vault');
     if (failed) this.failMission('送到医院，任务失败');
     this.ui.toast(`橙子医院把你捞回来了，账单 ${fmtUsd(fine)}`);
     this.actor.play('Idle', { fade: 0.05 });
@@ -1240,7 +1277,10 @@ export class Game {
     if (this.wanted > 0 && this.wantedTimer >= need) {
       this.wanted -= 1;
       this.wantedTimer = 0;
-      if (this.wanted === 0) this.ui.toast('通缉解除');
+      if (this.wanted === 0) {
+        this.ui.toast('通缉解除');
+        this.noteTrack('clear', 1);
+      }
     }
     const speed = this.vehicle ? Math.abs(this.vehicle.speed) : this.player.speed;
     const airborne = this.vehicle && this.vehicle.y > 3;
@@ -1289,7 +1329,7 @@ export class Game {
     if (this.vehicle) this.exitVehicle();
     this.teleport(SPOTS.safehouse.x + 6, SPOTS.safehouse.z, 0);
     this.ensurePolice(true);
-    const failed = this.mission && (this.mission.id === 'sec' || this.mission.id === 'rug');
+    const failed = this.mission && (this.mission.id === 'sec' || this.mission.id === 'rug' || this.mission.id === 'story-vault');
     if (failed) this.failMission('被 SEC 约谈，任务失败');
     this.audio.fail();
     this.ui.toast(`约谈结束，罚款 ${fmtUsd(fine)}`);
@@ -1305,6 +1345,7 @@ export class Game {
   }
 
   updateMission(dt) {
+    this.syncVaultProps();
     const mission = this.mission;
     this.bags.forEach((bag, i) => {
       bag.visible = mission?.id === 'rug' && mission.phase === 'loot' && !mission.got[i];
@@ -1493,6 +1534,7 @@ export class Game {
         const meta = COINS.find((c) => c.id === coin.drop.id);
         this.ui.toast(`捡到 ${fmtNum(coin.drop.amt, meta.dec)} ${coin.drop.id}`);
         this.noteDaily('coins');
+        this.noteTrack('coins', 1);
         this.rep += 2;
         this.walletSig = '';
       }
@@ -1885,11 +1927,13 @@ export class Game {
       this.ui.toast(`卖出 ${fmtNum(qty, coin.dec)} ${id}，到账 ${fmtUsd(qty * price)}`);
       if (this.mission?.id === 'pump' && this.mission.phase === 'sell' && id === 'ORNG' && qty >= 1000) {
         this.audio.buy();
+        this.noteTrack('trade', 1);
         this.completeMission();
         return;
       }
     }
     this.audio.buy();
+    this.noteTrack('trade', 1);
     this.walletSig = '';
     this.save();
     if (this.mode === 'modal') this.ui.openExchange(this.marketModel());
@@ -1971,7 +2015,8 @@ export class Game {
     if (this.mission.id === 'harbor') {
       for (const npc of this.guards) npc.alive = false;
     }
-    this.ui.toast(`已放弃 ${missionName(this.mission.id)}`);
+    const chapter = CHAPTERS.find((item) => item.id === this.mission.id);
+    this.ui.toast(`已放弃 ${chapter?.title || missionName(this.mission.id)}`);
     this.mission = null;
     this.objectiveSig = '';
     this.pushPrices();
@@ -2031,7 +2076,7 @@ export class Game {
     if (kind === 'missions') {
       this.ui.openMissions({
         active: this.mission?.id || '',
-        activeName: this.mission ? missionName(this.mission.id) : '',
+        activeName: this.mission ? (CHAPTERS.find((item) => item.id === this.mission.id)?.title || missionName(this.mission.id)) : '',
         done: [...this.done],
       });
     }
@@ -2134,6 +2179,8 @@ export class Game {
     this.finishedJobs = new Set(data.finishedJobs || []);
     this.storyChapter = data.storyChapter || 0;
     this.daily = data.daily || null;
+    this.progress = restoreProgress(data);
+    this.legacyAchievements = !Object.prototype.hasOwnProperty.call(data, 'achievements');
     this.player.hp = data.hp ?? 100;
     this.player.armor = data.armor ?? 0;
     this.weapon = data.weapon || 'fist';
@@ -2146,6 +2193,10 @@ export class Game {
     this.walletSig = '';
     this.ensurePolice(true);
     this.pushPrices();
+    if (this.legacyAchievements) {
+      this.legacyAchievements = false;
+      this.noteTrack(null, 0);
+    }
   }
 
   save() {
@@ -2166,6 +2217,9 @@ export class Game {
       finishedJobs: [...this.finishedJobs],
       storyChapter: this.storyChapter,
       daily: this.daily,
+      quests: this.progress?.quests || null,
+      achievements: this.progress?.achievements || [],
+      stats: this.progress?.stats || null,
       orngMult: getOrngMult(),
       hp: this.player.hp,
       armor: this.player.armor,
@@ -2348,6 +2402,107 @@ export class Game {
     }
   }
 
+  ensureQuests() {
+    if (!this.progress) this.progress = restoreProgress(null);
+    const day = gameDay();
+    if (this.progress.quests?.day !== day) this.progress.quests = freshQuests(day);
+  }
+
+  noteTalk() {
+    if (this.time - (this.talkAt || -99) < 8) return;
+    this.talkAt = this.time;
+    this.noteTrack('talk', 1);
+  }
+
+  noteTrack(track, amount = 0) {
+    this.ensureQuests();
+    const result = grantProgress(this.progress, track, amount, {
+      level: this.level(),
+      chapters: this.storyChapter,
+    });
+    if (!result.changed) return;
+    if (result.usd) {
+      this.usd += result.usd;
+      this.walletSig = '';
+      for (const item of result.gained.slice(0, 3)) {
+        const label = item.kind === 'ach' ? `成就：${item.name}` : `每日：${item.name}`;
+        this.ui.toast(`${label}，+${fmtUsd(item.reward)}`);
+      }
+      if (result.gained.length > 3) this.ui.toast(`还有 ${result.gained.length - 3} 项奖励已入账`);
+      this.audio.success();
+    }
+    if (result.gained.length || track !== 'drive') this.save();
+    if (this.mode === 'journal') this.ui.showJournal(this.journalModel());
+  }
+
+  journalModel() {
+    this.ensureQuests();
+    const items = (this.progress.quests.items || []).map((item) => {
+      const def = questById(item.id);
+      return {
+        name: def?.name || item.id,
+        have: Math.min(item.have, def?.need || item.have),
+        need: def?.need || 1,
+        reward: def?.reward || 0,
+        done: !!item.paid,
+      };
+    });
+    const achievements = ACHIEVEMENTS.map((ach) => ({
+      name: ach.name,
+      desc: ach.desc,
+      reward: ach.reward,
+      need: ach.need,
+      have: ach.stat === 'level' ? this.level() : (this.progress.stats[ach.stat] || 0),
+      done: this.progress.achievements.includes(ach.id),
+    }));
+    return {
+      day: this.progress.quests.day,
+      done: items.filter((item) => item.done).length,
+      total: items.length,
+      items,
+      achievements,
+      unlocked: achievements.filter((item) => item.done).length,
+    };
+  }
+
+  toggleJournal() {
+    if (this.mode === 'journal') this.closeJournal();
+    else if (this.mode === 'play' || this.mode === 'pause') this.openJournal();
+  }
+
+  openJournal() {
+    this.journalReturn = this.mode === 'pause' ? 'pause' : 'play';
+    this.mode = 'journal';
+    this.input.exitLock();
+    this.ui.hidePause();
+    this.ui.showJournal(this.journalModel());
+  }
+
+  closeJournal() {
+    this.ui.hideJournal();
+    const back = this.journalReturn || 'play';
+    this.journalReturn = 'play';
+    this.setMode(back);
+  }
+
+  debugStartVault() {
+    const index = CHAPTERS.findIndex((item) => item.id === 'story-vault');
+    const chapter = CHAPTERS[index];
+    this.guideStep = GUIDE.length;
+    this.storyChapter = index;
+    this.mission = {
+      id: chapter.id,
+      phase: 'go',
+      got: chapter.bags.map(() => false),
+      gate: 0,
+    };
+    this.objectiveSig = '';
+    this.wanted = 0;
+    if (this.vehicle) this.exitVehicle();
+    this.teleport(chapter.scout.x + 24, chapter.scout.z, 0);
+    if (this.mode !== 'play') this.setMode('play');
+  }
+
   showMarker(target, text) {
     if (target) {
       this.beacon.visible = true;
@@ -2363,6 +2518,7 @@ export class Game {
 
   updateLife(dt) {
     if (!this.daily) this.daily = dailyFor(new Date().toISOString().slice(0, 10));
+    this.ensureQuests();
     this.signalRed = Math.floor(this.time / 6) % 2 === 0;
     for (const light of this.signals || []) {
       const color = this.signalRed ? 0xff3344 : 0x39ff7a;
@@ -2410,6 +2566,7 @@ export class Game {
           this.rep += 30;
           this.finishedJobs.add('race');
           this.noteDaily('race');
+          this.noteTrack('race', 1);
           this.walletSig = '';
           this.audio.success();
           this.ui.toast(`竞速完成 ${seconds.toFixed(1)} 秒，+$1,200`);
@@ -2441,7 +2598,7 @@ export class Game {
     if (this.storyChapter < CHAPTERS.length) {
       const chapter = CHAPTERS[this.storyChapter];
       const who = castById(chapter.giver);
-      this.showMarker(who.home, `故事 ${this.storyChapter + 1}/8 · 去找${who.name}`);
+      this.showMarker(who.home, `故事 ${this.storyChapter + 1}/${CHAPTERS.length} · 去找${who.name}`);
       return;
     }
     this.eventTimer -= dt;
@@ -2456,8 +2613,10 @@ export class Game {
       }
     }
     const goal = this.nearestJob(here) || this.goalHint || { name: '按 M 接冷钱包专送', x: SPOTS.kiosk.x, z: SPOTS.kiosk.z, r: 5 };
-    const daily = this.daily.have >= this.daily.need ? '今日已完成' : `今日 ${this.daily.have}/${this.daily.need} ${this.daily.name}`;
-    this.showMarker(goal, `等级 ${this.level()} · 下一步：${goal.name} · ${daily}`);
+    const quests = this.progress?.quests?.items || [];
+    const paid = quests.filter((item) => item.paid).length;
+    const daily = quests.length ? `今日 ${paid}/${quests.length}` : '';
+    this.showMarker(goal, `等级 ${this.level()} · 下一步：${goal.name}${daily ? ` · ${daily}` : ''}`);
   }
 
   nearestJob(here) {
@@ -2525,6 +2684,7 @@ export class Game {
         this.rep += 8;
         this.walletSig = '';
         this.noteDaily('atm');
+        this.noteTrack('atm', 1);
         this.audio.coin();
         this.ui.toast('ATM 兑出 $220');
         return true;
@@ -2577,6 +2737,7 @@ export class Game {
         this.walletSig = '';
         this.audio.success();
         this.ui.toast('NFT 被你卷走了。SEC 盯上了画廊');
+        this.noteTrack('job', 1);
         return true;
       }
       if (job.kind === 'stunt') {
@@ -2591,6 +2752,7 @@ export class Game {
         this.walletSig = '';
         this.audio.success();
         this.ui.toast('特技门通过，+$800');
+        this.noteTrack('job', 1);
         return true;
       }
     }
@@ -2602,6 +2764,8 @@ export class Game {
       this.walletSig = '';
       this.audio.success();
       this.ui.toast('乘客下车，车费 $450');
+      this.noteTrack('job', 1);
+      this.noteTrack('taxi', 1);
       return true;
     }
     if (this.goalHint?.id === 'runner' && dist2(here.x, here.z, this.goalHint.x, this.goalHint.z) < 5 * 5) {
@@ -2712,6 +2876,8 @@ export class Game {
     this.goalHint = null;
     this.storyChapter = 0;
     this.daily = dailyFor(new Date().toISOString().slice(0, 10));
+    this.progress = restoreProgress(null);
+    this.driveBuf = 0;
     this.player.hp = 100;
     this.player.armor = 25;
     this.weapon = 'fist';
@@ -3140,9 +3306,11 @@ export class Game {
       return true;
     }
     if (!chapter || chapter.giver !== npc.castId) {
+      this.noteTalk();
       this.playCutscene([{ who: person.name, text: person.blurb }], person.cloth, () => this.setMode('play'));
       return true;
     }
+    this.noteTalk();
     if (this.guideStep < GUIDE.length) {
       this.ui.toast('先跟着橙色光柱做完教程');
       return true;
@@ -3235,16 +3403,16 @@ export class Game {
         done = dist2(here.x, here.z, chapter.spot.x, chapter.spot.z) < chapter.spot.r ** 2;
       }
     } else if (chapter.kind === 'escape') {
-      text = `故事 5/8 · ${this.wanted} 星，甩掉后再进安全屋`;
+      text = `故事 5/9 · ${this.wanted} 星，甩掉后再进安全屋`;
       done = this.wanted === 0 && dist2(here.x, here.z, chapter.spot.x, chapter.spot.z) < chapter.spot.r ** 2;
     } else if (chapter.kind === 'fly') {
       const flying = this.vehicle && (this.vehicle.kind === 'heli' || this.vehicle.kind === 'plane');
-      text = flying ? '故事 6/8 · 继续拉高，超过 12 米' : chapter.objective;
+      text = flying ? '故事 6/9 · 继续拉高，超过 12 米' : chapter.objective;
       done = !!flying && here.y > 12;
     } else if (chapter.kind === 'gates') {
       const gate = chapter.gates[Math.min(mission.gate, chapter.gates.length - 1)];
       target = gate;
-      text = `故事 7/8 · 光环 ${Math.min(mission.gate + 1, chapter.gates.length)}/${chapter.gates.length}`;
+      text = `故事 7/9 · 光环 ${Math.min(mission.gate + 1, chapter.gates.length)}/${chapter.gates.length}`;
       if (mission.gate < chapter.gates.length && dist2(here.x, here.z, gate.x, gate.z) < gate.r ** 2) {
         mission.gate += 1;
         if (mission.gate >= chapter.gates.length) done = true;
@@ -3257,9 +3425,14 @@ export class Game {
         }
       } else {
         const flying = this.vehicle && (this.vehicle.kind === 'heli' || this.vehicle.kind === 'plane');
-        text = '故事 8/8 · 拉高离开港口';
+        text = '故事 8/9 · 拉高离开港口';
         done = !!flying && here.y > 12;
       }
+    } else if (chapter.kind === 'vault') {
+      const step = this.updateVault(chapter, mission, here);
+      target = step.target;
+      text = step.text;
+      done = step.done;
     }
     if (done) {
       this.finishStory(chapter);
@@ -3276,9 +3449,83 @@ export class Game {
     }
   }
 
+  updateVault(chapter, mission, here) {
+    if (mission.phase === 'go') {
+      if (dist2(here.x, here.z, chapter.scout.x, chapter.scout.z) < chapter.scout.r ** 2) {
+        mission.phase = 'in';
+        this.ui.toast('门在交易所北侧。下车再进去');
+      }
+      return { target: chapter.scout, text: chapter.objective, done: false };
+    }
+    if (mission.phase === 'in') {
+      const near = dist2(here.x, here.z, chapter.door.x, chapter.door.z) < chapter.door.r ** 2;
+      if (near && this.vehicle) {
+        if (!this.vaultHint) {
+          this.vaultHint = true;
+          this.ui.toast('先下车，金库不让车进');
+        }
+      } else if (!near) this.vaultHint = false;
+      if (near && !this.vehicle) {
+        mission.phase = 'loot';
+        mission.got = chapter.bags.map(() => false);
+        this.vaultHint = false;
+        this.ui.toast('金库开了。拿走三袋储备');
+      }
+      return {
+        target: chapter.door,
+        text: this.vehicle ? '故事 9/9 · 先下车，再走进金库门' : '故事 9/9 · 走进金库门',
+        done: false,
+      };
+    }
+    if (mission.phase === 'loot') {
+      const got = mission.got || chapter.bags.map(() => false);
+      mission.got = got;
+      chapter.bags.forEach((spot, index) => {
+        if (!got[index] && dist2(here.x, here.z, spot.x, spot.z) < 16) got[index] = true;
+      });
+      const left = got.findIndex((flag) => !flag);
+      if (left >= 0) {
+        return {
+          target: chapter.bags[left],
+          text: `故事 9/9 · 搬走储备 ${got.filter(Boolean).length}/3`,
+          done: false,
+        };
+      }
+      mission.phase = 'run';
+      this.wanted = Math.max(this.wanted, 4);
+      this.ensurePolice(true);
+      this.ui.toast('警报响了。把袋子开回安全屋');
+    }
+    return {
+      target: chapter.escape,
+      text: `故事 9/9 · 逃回安全屋 · ${this.wanted} 星`,
+      done: dist2(here.x, here.z, chapter.escape.x, chapter.escape.z) < chapter.escape.r ** 2,
+    };
+  }
+
+  syncVaultProps() {
+    const mission = this.mission;
+    const chapter = CHAPTERS.find((item) => item.id === 'story-vault');
+    const looting = mission?.id === 'story-vault' && mission.phase === 'loot';
+    this.vaultBags?.forEach((mesh, index) => {
+      const spot = chapter.bags[index];
+      mesh.visible = !!(looting && !mission.got?.[index]);
+      if (!mesh.visible) return;
+      mesh.position.set(spot.x, 0.45 + Math.sin(this.time * 2 + index) * 0.08, spot.z);
+      mesh.rotation.y = this.time;
+    });
+    if (this.vaultDoor) {
+      this.vaultDoor.visible = mission?.id === 'story-vault' && (mission.phase === 'go' || mission.phase === 'in');
+    }
+  }
+
   finishStory(chapter) {
     if (!this.mission || this.mission.id !== chapter.id) return;
     this.mission = null;
+    if (chapter.kind === 'vault') {
+      this.wanted = 0;
+      this.ensurePolice(true);
+    }
     const reward = chapter.reward || {};
     if (reward.usd) this.usd += reward.usd;
     if (reward.rep) this.rep += reward.rep;
@@ -3286,6 +3533,8 @@ export class Game {
     if (reward.btc) this.bal.BTC += reward.btc;
     if (reward.sol) this.bal.SOL += reward.sol;
     this.storyChapter = Math.max(this.storyChapter, CHAPTERS.indexOf(chapter) + 1);
+    if (chapter.kind === 'vault') this.noteTrack('vault', 1);
+    else this.noteTrack(null, 0);
     this.walletSig = '';
     this.objectiveSig = '';
     this.audio.success();
