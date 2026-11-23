@@ -82,7 +82,7 @@ export const CHAPTERS = [
     title: '第一章 · 橙爪的局',
     kind: 'reach',
     spot: { x: 0, z: 58, r: 7 },
-    objective: '故事 1/8 · 跟着黄线去交易所',
+    objective: '故事 1/9 · 跟着黄线去交易所',
     reward: { usd: 500, rep: 20 },
     intro: [
       { who: '橙爪', text: '大橙子，别在斑马线上发呆。这城里每个人都在喊单。' },
@@ -99,7 +99,7 @@ export const CHAPTERS = [
     title: '第二章 · 汪言造势',
     kind: 'pump',
     spot: { x: 230, z: 214, r: 7 },
-    objective: '故事 2/8 · 到海滩拉盘点，按 E',
+    objective: '故事 2/9 · 到海滩拉盘点，按 E',
     reward: { orng: 1500, rep: 22 },
     intro: [
       { who: '汪言', text: '听见没有？社区需要一个符号。大橙子币今天必须被看见。' },
@@ -118,8 +118,8 @@ export const CHAPTERS = [
     spot: { x: -380, z: 239, r: 16 },
     back: { x: 28, z: -70, r: 8 },
     mid: '码头到了。把车开回老鲸的阁楼。',
-    objective: '故事 3/8 · 开车去码头',
-    backText: '故事 3/8 · 开回老鲸的阁楼',
+    objective: '故事 3/9 · 开车去码头',
+    backText: '故事 3/9 · 开回老鲸的阁楼',
     reward: { usd: 2500, rep: 28 },
     intro: [
       { who: '老鲸', text: '我的冷钱包在码头。你去确认它还在，再开回来。' },
@@ -142,8 +142,8 @@ export const CHAPTERS = [
       { x: 96, z: 58 },
     ],
     wanted: 2,
-    objective: '故事 4/8 · 捡回三袋流动性',
-    backText: '故事 4/8 · 把袋子送回柜姐凯',
+    objective: '故事 4/9 · 捡回三袋流动性',
+    backText: '故事 4/9 · 把袋子送回柜姐凯',
     reward: { btc: 0.008, rep: 32 },
     intro: [
       { who: '柜姐凯', text: '储备证明在做审计。审计期间，那三袋流动性先放在街上了。' },
@@ -161,7 +161,7 @@ export const CHAPTERS = [
     kind: 'escape',
     spot: { x: 0, z: -58, r: 7 },
     wanted: 3,
-    objective: '故事 5/8 · 甩掉星星，再进安全屋',
+    objective: '故事 5/9 · 甩掉星星，再进安全屋',
     reward: { usd: 2000, rep: 34 },
     intro: [
       { who: '格探员', text: '橙氏基金、海滩喊单、街上的袋子。度假笔记已经够厚了。' },
@@ -178,7 +178,7 @@ export const CHAPTERS = [
     title: '第六章 · 零日开门',
     kind: 'fly',
     spot: { x: -380, z: 239, r: 18 },
-    objective: '故事 6/8 · 上码头的飞机或直升机，拉到高处',
+    objective: '故事 6/9 · 上码头的飞机或直升机，拉到高处',
     reward: { sol: 2, rep: 26 },
     intro: [
       { who: '零日', text: '交易所的门我开过一条缝。缝在天上，不在登录页。' },
@@ -199,7 +199,7 @@ export const CHAPTERS = [
       { x: 174, z: -90, r: 8 },
       { x: 174, z: -174, r: 8 },
     ],
-    objective: '故事 7/8 · 穿过橙爪的光环',
+    objective: '故事 7/9 · 穿过橙爪的光环',
     reward: { usd: 1500, rep: 24 },
     intro: [
       { who: '橙爪', text: '正经事做完了？那来点不正经的。三个环，谁先怂谁请饮料。' },
@@ -216,7 +216,7 @@ export const CHAPTERS = [
     title: '终章 · 链还亮着',
     kind: 'finale',
     spot: { x: -400, z: 280, r: 18 },
-    objective: '故事 8/8 · 去港口，再把直升机拉高离开',
+    objective: '故事 8/9 · 去港口，再把直升机拉高离开',
     reward: { usd: 5000, btc: 0.01, rep: 50 },
     intro: [
       { who: '零日', text: '格探员的假日、柜姐的账、老鲸的冷钱包，今晚会在港口对上。' },
@@ -228,7 +228,33 @@ export const CHAPTERS = [
       { who: '橙爪', text: '看，灯还在。没有人归零，只是这一章翻过去了。' },
       { who: '格探员', text: '笔记我会留着。下一趟假日，换一条链。' },
       { who: '你', text: '那我呢？' },
-      { who: '柜姐凯', text: '你还有车，有盘，有一个昵称。城里继续营业。' },
+      { who: '柜姐凯', text: '你还有车，有盘，有一个昵称。城里继续营业。金库的事，等灯再暗一点。' },
+    ],
+  },
+  {
+    id: 'story-vault',
+    giver: 'kai',
+    title: '第九章 · 交易所金库',
+    kind: 'vault',
+    scout: { x: 58, z: 58, r: 8 },
+    door: { x: 6, z: 68, r: 5 },
+    bags: [
+      { x: 14, z: 58 },
+      { x: 0, z: 74 },
+      { x: -14, z: 58 },
+    ],
+    escape: { x: 0, z: -58, r: 8 },
+    objective: '故事 9/9 · 去东侧路口踩点',
+    reward: { usd: 8000, btc: 0.012, rep: 55 },
+    intro: [
+      { who: '柜姐凯', text: '终章的灯还亮着，金库的灯不该亮。审计要进门，门里那三袋得先换个地方。' },
+      { who: '你', text: '你要我抢自己的交易所？' },
+      { who: '柜姐凯', text: '叫内部调度。先去东边路口看一眼，下车进北侧的门，搬走三袋，再开回安全屋。格探员的假日还没结束。' },
+    ],
+    outro: [
+      { who: '柜姐凯', text: '账上写：正常冷存储迁移。你的一成已经在现金里，剩下的当没看见。' },
+      { who: '格探员', text: '金库空了，笔记又厚了一页。下一趟我不走正门。' },
+      { who: '橙爪', text: '所以第九章也是：链还亮着，库不太亮。' },
     ],
   },
 ];

@@ -603,8 +603,8 @@ html.phone:not(.portrait) #lookpad {
   left: 40%;
 }
 
-#btn-board, #who { pointer-events: auto; }
-#btn-board {
+#btn-board, #btn-journal, #who { pointer-events: auto; }
+#btn-board, #btn-journal {
   position: absolute;
   top: calc(318px + var(--sat));
   left: calc(14px + var(--sal));
@@ -616,6 +616,7 @@ html.phone:not(.portrait) #lookpad {
   color: #ffd7a8;
   font-weight: 700;
 }
+#btn-journal { top: calc(366px + var(--sat)); }
 #who {
   position: absolute;
   top: calc(318px + var(--sat));
@@ -656,6 +657,18 @@ html.phone:not(.portrait) #lookpad {
 }
 .board-row i { width: 12px; height: 12px; border-radius: 50%; display: block; }
 .board-row.me { color: #ffd56a; }
+#journal-list { max-height: min(420px, 46vh); overflow: auto; padding-right: 10px; }
+.journal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.journal-row b { grid-column: 1; }
+.journal-row span { grid-column: 1; color: #c9bed8; font-size: 12px; }
+.journal-row em { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: #ffd7a8; font-style: normal; white-space: nowrap; }
+.journal-row.done b { color: #7dffa6; }
 #cutscene.overlay {
   align-items: flex-end;
   background: linear-gradient(to top, rgba(8, 6, 16, 0.78), rgba(8, 6, 16, 0.05) 42%, transparent 70%);
@@ -674,11 +687,15 @@ html.phone:not(.portrait) #lookpad {
   flex: none;
 }
 #cut-text { margin: 6px 0 0; line-height: 1.5; }
-html.phone #btn-board {
+html.phone #btn-board,
+html.phone #btn-journal {
   top: auto;
   left: calc(110px + var(--sal));
   bottom: calc(52px + var(--sab));
   padding: 6px 10px;
+}
+html.phone #btn-journal {
+  left: calc(158px + var(--sal));
 }
 html.phone #who {
   top: auto;
@@ -688,4 +705,4 @@ html.phone #who {
   padding: 4px 8px;
   font-size: 11px;
 }
-html.phone .cut-card, html.phone #auth .menu-card, html.phone #board .modal-card { width: min(100%, 520px); }
+html.phone .cut-card, html.phone #auth .menu-card, html.phone #board .modal-card, html.phone #journal .modal-card { width: min(100%, 520px); }

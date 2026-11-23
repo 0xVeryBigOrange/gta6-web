@@ -21,6 +21,7 @@ export function createUI(root) {
       </div>
       <div id="crosshair"></div>
       <button id="btn-board" type="button">榜</button>
+      <button id="btn-journal" type="button">日</button>
       <div id="who" class="panel"></div>
       <div id="toasts"></div>
       <div id="rotate-hint" class="panel"><span>横过来玩更顺手</span><button type="button" id="rotate-dismiss">知道了</button></div>
@@ -51,6 +52,7 @@ export function createUI(root) {
         <div class="actions">
           <button class="primary" id="btn-resume" type="button">继续</button>
           <button class="ghost" id="btn-board-pause" type="button">排行榜</button>
+          <button class="ghost" id="btn-journal-pause" type="button">每日与成就</button>
           <button class="ghost" id="btn-help" type="button">操作说明</button>
           <button class="ghost" id="btn-save" type="button">立即存档</button>
           <button class="ghost" id="btn-sound" type="button">音效：开</button>
@@ -69,10 +71,10 @@ export function createUI(root) {
           <li>直升机：Shift 或空格上升，Ctrl 下降，W/S 前后，A/D 转向</li>
           <li>船只能在海里和港口像样地开</li>
           <li>鼠标左键攻击。1 拳头，2 手枪，3 步枪，R 换弹</li>
-          <li>E：交易所、任务、车行、房产，也可以和故事人物说话。M 任务，H 帮助，Esc 暂停，T 挥手</li>
+          <li>E：交易所、任务、车行、房产，也可以和故事人物说话。M 任务，J 或「日」打开每日任务和成就，H 帮助，Esc 暂停，T 挥手</li>
           <li>倒下会在橙子医院醒来。手机：左下摇杆移动，右半屏拖动环顾，右侧按钮开火。横屏更顺手</li>
         </ul>
-        <p class="fine">打开菜单时城市时间会暂停。游客进度留在本地。登录后，净值、声望和故事章节会同步到排行榜。</p>
+        <p class="fine">打开菜单时城市时间会暂停。游客进度留在本地。登录后，净值、声望和故事章节会同步到排行榜。每日三单按新加坡时间零点刷新，成就记在同一份存档里。</p>
         <button class="primary" id="btn-help-close" type="button">知道了</button>
       </div>
     </div>
@@ -118,6 +120,18 @@ export function createUI(root) {
           </div>
         </div>
         <button class="primary" id="cut-next" type="button">继续</button>
+      </div>
+    </div>
+    <div id="journal" class="overlay">
+      <div class="modal-card panel">
+        <h2>每日与成就</h2>
+        <div class="board-tabs">
+          <button type="button" data-journal="daily">每日</button>
+          <button type="button" data-journal="ach">成就</button>
+        </div>
+        <p id="journal-msg" class="fine"></p>
+        <div id="journal-list"></div>
+        <div class="actions"><button class="primary" id="journal-close" type="button">关闭</button></div>
       </div>
     </div>
     <div id="boot" class="overlay on">
@@ -183,6 +197,7 @@ export function createUI(root) {
       $('#modal').classList.remove('on');
       $('#auth').classList.remove('on');
       $('#board').classList.remove('on');
+      $('#journal').classList.remove('on');
       $('#cutscene').classList.remove('on');
       $('#title').classList.add('on');
       $('#hud').classList.remove('on');
@@ -612,6 +627,35 @@ export function createUI(root) {
     hideBoard() {
       $('#board').classList.remove('on');
     },
+    showJournal(model) {
+      journalModel = model;
+      $('#journal').classList.add('on');
+      const tab = journalTab;
+      $('#journal').querySelectorAll('[data-journal]').forEach((btn) => {
+        btn.classList.toggle('on', btn.dataset.journal === tab);
+      });
+      $('#journal-msg').textContent = tab === 'daily'
+        ? `${model.day} · 新加坡时间 0 点刷新 · 已完成 ${model.done}/${model.total}`
+        : `已解锁 ${model.unlocked}/${model.achievements.length}`;
+      const list = $('#journal-list');
+      list.replaceChildren();
+      const rows = tab === 'daily' ? model.items : model.achievements;
+      for (const row of rows) {
+        const el = document.createElement('div');
+        el.className = `journal-row${row.done ? ' done' : ''}`;
+        const name = document.createElement('b');
+        name.textContent = row.done ? `${row.name} · 已完成` : row.name;
+        const desc = document.createElement('span');
+        desc.textContent = row.desc || `${row.have}/${row.need}`;
+        const meta = document.createElement('em');
+        meta.textContent = row.desc ? `${Math.min(row.have, row.need)}/${row.need} · +${fmtUsd(row.reward)}` : `+${fmtUsd(row.reward)}`;
+        el.append(name, desc, meta);
+        list.appendChild(el);
+      }
+    },
+    hideJournal() {
+      $('#journal').classList.remove('on');
+    },
     showCutscene(line, color) {
       $('#cutscene').classList.add('on');
       $('#cut-who').textContent = line.who;
@@ -640,7 +684,11 @@ export function createUI(root) {
     onBuy: null,
     onCloseModal: null,
     onBoardClose: null,
+    onJournal: null,
   };
+
+  let journalTab = 'daily';
+  let journalModel = null;
 
   let authMode = 'login';
   function paintAuth(mode, message) {
@@ -680,6 +728,15 @@ export function createUI(root) {
     btn.onclick = () => api.onBoard?.(btn.dataset.tab);
   });
   $('#board-close').onclick = () => api.onBoardClose?.();
+  $('#btn-journal').onclick = () => api.onJournal?.();
+  $('#btn-journal-pause').onclick = () => api.onJournal?.();
+  $('#journal-close').onclick = () => api.onJournal?.();
+  $('#journal').querySelectorAll('[data-journal]').forEach((btn) => {
+    btn.onclick = () => {
+      journalTab = btn.dataset.journal;
+      if (journalModel) api.showJournal(journalModel);
+    };
+  });
   $('#cut-next').onclick = () => api.onCut?.();
 
   $('#btn-new').onclick = () => api.onNew?.();
