@@ -10,20 +10,13 @@ export const GUIDE = [
 export const ACTIVITIES = [
   { id: 'atm-west', kind: 'atm', name: '西区加密 ATM', x: -96, z: 36, r: 3.4 },
   { id: 'atm-beach', kind: 'atm', name: '海滩 ATM', x: 148, z: 206, r: 3.4 },
-  { id: 'race', kind: 'race', name: '街头竞速', x: 86, z: -24, r: 6 },
+  { id: 'race', kind: 'race', track: 'neon', name: '地下赛 · 霓虹环线', x: 116, z: 0, r: 9 },
+  { id: 'race-beach', kind: 'race', track: 'beach', name: '地下赛 · 海滩折返', x: -150, z: 196, r: 9 },
   { id: 'taxi', kind: 'taxi', name: '夜班出租', x: -28, z: 34, r: 4.5, drop: { x: 120, z: 214 } },
   { id: 'stunt', kind: 'stunt', name: '高速特技门', x: 240, z: -250, r: 10 },
   { id: 'guns', kind: 'guns', name: '武器店', x: 112, z: 52, r: 4.2 },
   { id: 'clothes', kind: 'clothes', name: '服装店', x: -42, z: 86, r: 4.2 },
   { id: 'gallery', kind: 'gallery', name: 'NFT 画廊', x: 64, z: -96, r: 4.4 },
-];
-
-export const RACE_GATES = [
-  { x: 86, z: -24 },
-  { x: 174, z: -90 },
-  { x: 174, z: -174 },
-  { x: 80, z: -174 },
-  { x: 86, z: -24 },
 ];
 
 const DAILY = [

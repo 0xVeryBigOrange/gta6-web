@@ -9,6 +9,7 @@ export function createUI(root) {
       <div id="ticker" class="panel"><div class="track" id="ticker-track"></div></div>
       <div id="stars" class="panel"><div id="star-row"></div><small id="headline"></small></div>
       <div id="objective" class="panel"></div>
+      <div id="race-hud"></div>
       <div id="wallet" class="panel"><button type="button" id="wallet-chip" aria-expanded="false">净值</button><div id="wallet-body"></div></div>
       <div id="minimap-wrap"><canvas id="minimap" width="180" height="180"></canvas></div>
       <div id="prompt" class="panel"></div>
@@ -71,7 +72,7 @@ export function createUI(root) {
           <li>直升机：Shift 或空格上升，Ctrl 下降，W/S 前后，A/D 转向</li>
           <li>船只能在海里和港口像样地开</li>
           <li>鼠标左键攻击。1 拳头，2 手枪，3 步枪，R 换弹</li>
-          <li>E：交易所、任务、车行、房产，也可以和故事人物说话。M 任务，J 或「日」打开每日任务和成就，H 帮助，Esc 暂停，T 挥手</li>
+          <li>E：交易所、任务、车行、房产，也可以和故事人物说话。地图上的粉标是地下赛，按 E 或互动键发车。M 任务，J 或「日」打开每日任务和成就，H 帮助，Esc 暂停，T 挥手</li>
           <li>倒下会在橙子医院醒来。手机：左下摇杆移动，右半屏拖动环顾，右侧按钮开火。横屏更顺手</li>
         </ul>
         <p class="fine">打开菜单时城市时间会暂停。游客进度留在本地。登录后，净值、声望和故事章节会同步到排行榜。每日三单按新加坡时间零点刷新，成就记在同一份存档里。</p>
@@ -235,6 +236,11 @@ export function createUI(root) {
       const el = $('#objective');
       el.style.display = text ? 'block' : 'none';
       el.textContent = text || '';
+    },
+    setRace(text) {
+      const el = $('#race-hud');
+      el.textContent = text || '';
+      el.classList.toggle('on', !!text);
     },
     setPrompt(text) {
       const el = $('#prompt');
