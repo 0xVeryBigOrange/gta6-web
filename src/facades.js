@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const STYLES = [
   { wall: '#f6d7c4', trim: '#c4564a', glass: '#173044', shop: '#4a2430' },
@@ -289,5 +290,36 @@ export function makeBuilding(kind, rng) {
     }
     if (rng() > 0.4) addSign(group, style, w, 3.3 + h * 0.62, d / 2 + 0.28, rng);
   }
+  collapseBuilding(group);
   return group;
+}
+
+function collapseBuilding(group) {
+  const buckets = new Map();
+  const meshes = [];
+  group.traverse((obj) => {
+    if (obj.isMesh) meshes.push(obj);
+  });
+  for (const mesh of meshes) {
+    const list = buckets.get(mesh.material) || [];
+    list.push(mesh);
+    buckets.set(mesh.material, list);
+  }
+  for (const [material, list] of buckets) {
+    if (list.length < 2) continue;
+    const geos = [];
+    for (const mesh of list) {
+      const geo = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+      geo.applyMatrix4(mesh.matrix);
+      geos.push(geo);
+    }
+    const merged = mergeGeometries(geos, false);
+    if (!merged) continue;
+    const mesh = new THREE.Mesh(merged, material);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    for (const old of list) old.removeFromParent();
+    group.add(mesh);
+    for (const geo of geos) geo.dispose();
+  }
 }

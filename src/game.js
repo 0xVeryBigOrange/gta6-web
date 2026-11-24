@@ -8,7 +8,7 @@ import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { createUI } from './ui.js';
 import { createInput } from './input.js';
 import { createAudio } from './audio.js';
-import { loadGameAssets } from './assets.js';
+import { loadExtraPeople, loadGameAssets } from './assets.js';
 import { buildWorld } from './world.js';
 import { createActor, locomotion } from './actors.js';
 import { buildBike, buildHeli, buildPlane, spinParts } from './rides.js';
@@ -27,7 +27,8 @@ import {
 import { getOrngMult, getPriceSource, getPrices, refreshPrices, setOrngMult, tickSimulated } from './prices.js';
 import { loadSave, writeSave } from './save.js';
 import { angNorm, clamp, dist2, fmtNum, fmtUsd, mulberry32 } from './util.js';
-import { ACTIVITIES, GUIDE, RACE_GATES, dailyFor, levelFromRep, routeOnRoads } from './citylife.js';
+import { ACTIVITIES, GUIDE, dailyFor, levelFromRep, routeOnRoads } from './citylife.js';
+import { formatRaceTime, readRaceBests, stepRacer, trackById } from './racing.js';
 import { ACHIEVEMENTS, freshQuests, gameDay, grantProgress, questById, restoreProgress } from './progress.js';
 import {
   cloud,
@@ -114,6 +115,7 @@ export class Game {
     this.rep = 0;
     this.finishedJobs = new Set();
     this.race = null;
+    this.raceBest = {};
     this.taxi = null;
     this.atmUse = 0;
     this.eventTimer = 20;
@@ -216,13 +218,16 @@ export class Game {
       startVault: () => this.debugStartVault(),
       grant: (track, amount = 1) => this.noteTrack(track, amount),
       progress: () => this.progress,
+      startRace: (id) => this.beginRace(id),
+      renderFrame: () => this.renderFrame(),
     };
   }
 
   async boot() {
+    this.bootAt = performance.now();
     this.setupThree();
     try {
-      this.assets = await loadGameAssets(this.renderer, (text) => this.ui.setBoot(true, text));
+      this.assets = await loadGameAssets(this.renderer, (text) => this.ui.setBoot(true, text), this.quality);
     } catch (error) {
       this.ui.setBoot(true, '城区加载失败');
       throw error;
@@ -232,9 +237,11 @@ export class Game {
     this.prepareTemplates();
     this.spawnCast();
     this.ready = true;
+    this.bootMs = Math.round(performance.now() - this.bootAt);
     this.mode = 'title';
     this.ui.setBoot(false);
     this.ui.showTitle();
+    this.ensureWorldPeople();
     this.pushPrices();
     refreshPrices(this.rng).then(() => {
       if (this.mode !== 'boot') this.pushPrices();
@@ -261,7 +268,8 @@ export class Game {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = lite ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+    this.useComposer = !lite;
     this.sun = new THREE.DirectionalLight(0xfff3df, lite ? 2.4 : 3.1);
     this.sun.castShadow = true;
     const shadow = lite ? 512 : 2048;
@@ -382,6 +390,7 @@ export class Game {
       sport: this.assets.cars['hatchback-sports'],
       taxi: this.assets.cars.taxi,
       race: this.assets.cars.race,
+      flame: this.assets.cars['sedan-sports'],
       police: this.assets.cars.police,
       boat: this.assets.boat,
       bike: buildBike(),
@@ -393,9 +402,10 @@ export class Game {
   makeVehicle(id, x, z, yaw, flags = {}) {
     const def = VEHICLES.find((item) => item.id === id);
     const mesh = this.templates[id].clone(true);
+    const cast = this.quality !== 'low' && !flags.ai && !flags.traffic && !flags.parked;
     mesh.traverse((obj) => {
       if (!obj.isMesh) return;
-      obj.castShadow = true;
+      obj.castShadow = cast;
       obj.receiveShadow = true;
     });
     this.scene.add(mesh);
@@ -417,6 +427,7 @@ export class Game {
       personal: !!flags.personal,
       traffic: !!flags.traffic,
       police: !!flags.police,
+      ai: !!flags.ai,
       hotwired: !!flags.personal && this.ownedCars.has(id),
       seg: Math.floor(this.rng() * Math.max(1, this.world.roads.length)),
       segT: this.rng(),
@@ -490,13 +501,14 @@ export class Game {
     this.makeVehicle('sport', -50, 48, Math.PI, { personal: true });
     this.makeVehicle('taxi', -66, 36, 0, { personal: true });
     this.makeVehicle('race', -66, 48, 0, { personal: true });
+    this.makeVehicle('flame', -78, 62, Math.PI, { personal: true });
     this.makeVehicle('bike', -50, 22, 0.2, { personal: true });
     this.makeVehicle('boat', -400, 280, 0.4, { personal: true });
     this.makeVehicle('heli', -380, 239, Math.PI / 2, { personal: true });
     this.makeVehicle('plane', -510, -390, Math.PI / 2, { personal: true });
     this.makeVehicle('police', 86, -36, Math.PI, { police: true });
-    const lite = Math.min(window.innerWidth, window.innerHeight) <= 520 || window.innerWidth <= 700;
-    const trafficN = lite ? 8 : 14;
+    const lite = this.quality === 'low';
+    const trafficN = lite ? 5 : 14;
     for (let i = 0; i < trafficN; i += 1) {
       const id = ['sedan', 'taxi', 'suv', 'sport'][i % 4];
       const car = this.makeVehicle(id, 0, 0, 0, { traffic: true });
@@ -505,7 +517,7 @@ export class Game {
       });
       this.parkOnRoad(car);
     }
-    for (let i = 0; i < (lite ? 4 : 8); i += 1) {
+    for (let i = 0; i < (lite ? 3 : 8); i += 1) {
       const id = ['sedan', 'taxi', 'suv'][i % 3];
       const car = this.makeVehicle(id, 0, 0, 0, { parked: true });
       car.parked = true;
@@ -522,36 +534,15 @@ export class Game {
       car.yaw = Math.atan2(dx, dz);
     }
 
-    const kinds = ['female', 'worker', 'male', 'suit', 'casual2', 'classy', 'suitf', 'male'];
-    const behaviors = ['walk', 'jog', 'chat', 'idle'];
-    const crowd = lite ? 12 : 24;
-    for (let i = 0; i < crowd; i += 1) {
-      const npc = this.makeNpc(kinds[i % kinds.length]);
-      npc.behavior = behaviors[i % behaviors.length];
-      this.placeWalker(npc, i);
-      if (i < 10) {
-        const ang = (i / 10) * Math.PI * 2;
-        npc.x = Math.cos(ang) * (6 + (i % 3) * 2);
-        npc.z = 24 + Math.sin(ang) * (5 + (i % 2) * 3);
-        npc.tx = npc.x + 6;
-        npc.tz = npc.z + 4;
-      } else if (i % 5 === 0) {
-        npc.x = 96 + (i % 4) * 6;
-        npc.z = 208;
-        npc.behavior = 'idle';
-      }
-      this.npcs.push(npc);
-    }
-    for (let i = 0; i < 4; i += 1) {
-      const cop = this.makeNpc('suit');
-      cop.team = 'police';
-      cop.armed = true;
-      cop.hp = 80;
-      cop.active = false;
-      cop.actor.model.visible = false;
-      this.npcs.push(cop);
-      this.police.push(cop);
-    }
+    this.raceAiCar = this.makeVehicle('race', 0, -400, 0, { ai: true });
+    this.raceAiCar.mesh.visible = false;
+    this.raceAiCar.mesh.traverse((obj) => {
+      if (!obj.isMesh || !obj.material) return;
+      const mat = obj.material.clone();
+      mat.color = new THREE.Color(0x9fd4ff);
+      obj.material = mat;
+      obj.castShadow = false;
+    });
 
     const coinGeo = new THREE.TorusGeometry(0.38, 0.12, 8, 14);
     const drops = [
@@ -669,7 +660,7 @@ export class Game {
     const step = this.mode === 'play' ? wall : 0;
     if (step) this.time += step;
     this.update(step, wall);
-    this.composer.render();
+    this.renderFrame();
     this.fpsAccum = (this.fpsAccum || 0) + wall;
     this.fpsFrames = (this.fpsFrames || 0) + 1;
     if (this.fpsAccum > 0.4) {
@@ -686,6 +677,65 @@ export class Game {
     const h = Math.floor(mins / 60);
     const m = mins % 60;
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+
+  renderFrame() {
+    if (this.useComposer) this.composer.render();
+    else this.renderer.render(this.scene, this.camera);
+  }
+
+  async ensureWorldPeople() {
+    if (this.peopleReady) return;
+    if (!this.peopleLoad) {
+      this.peopleLoad = loadExtraPeople(this.assets).catch((error) => {
+        console.error(error);
+      });
+    }
+    await this.peopleLoad;
+    this.spawnCrowd();
+    if (!this.storySpawned) {
+      this.spawnStoryCast();
+      this.storySpawned = true;
+    }
+    this.peopleReady = true;
+  }
+
+  spawnCrowd() {
+    if (this.crowdSpawned) return;
+    this.crowdSpawned = true;
+    const lite = this.quality === 'low';
+    const kinds = ['female', 'worker', 'male', 'suit', 'casual2', 'classy', 'suitf', 'male'];
+    const behaviors = ['walk', 'jog', 'chat', 'idle'];
+    const crowd = lite ? 5 : 18;
+    for (let i = 0; i < crowd; i += 1) {
+      const kind = this.assets.people[kinds[i % kinds.length]] ? kinds[i % kinds.length] : 'male';
+      const npc = this.makeNpc(kind);
+      npc.behavior = behaviors[i % behaviors.length];
+      this.placeWalker(npc, i);
+      if (i < 10) {
+        const ang = (i / 10) * Math.PI * 2;
+        npc.x = Math.cos(ang) * (6 + (i % 3) * 2);
+        npc.z = 24 + Math.sin(ang) * (5 + (i % 2) * 3);
+        npc.tx = npc.x + 6;
+        npc.tz = npc.z + 4;
+      } else if (i % 5 === 0) {
+        npc.x = 96 + (i % 4) * 6;
+        npc.z = 208;
+        npc.behavior = 'idle';
+      }
+      this.npcs.push(npc);
+    }
+    const copKind = this.assets.people.suit ? 'suit' : 'male';
+    for (let i = 0; i < 4; i += 1) {
+      const cop = this.makeNpc(copKind);
+      cop.team = 'police';
+      cop.armed = true;
+      cop.hp = 80;
+      cop.active = false;
+      cop.actor.model.visible = false;
+      this.npcs.push(cop);
+      this.police.push(cop);
+    }
   }
 
   update(dt, wall) {
@@ -797,6 +847,15 @@ export class Game {
   }
 
   updateRideOrPlayer(dt, ctrl) {
+    if (this.race?.phase === 'count' && this.vehicle && this.race.grid) {
+      const grid = this.race.grid;
+      this.vehicle.speed = 0;
+      this.vehicle.x = grid.x;
+      this.vehicle.z = grid.z;
+      this.vehicle.yaw = grid.yaw;
+      this.vehicle.y = 0;
+      ctrl = { ...ctrl, axis: { x: 0, y: 0 }, boost: false };
+    }
     if (this.vehicle) this.updateVehicle(this.vehicle, dt, ctrl);
     else this.updatePlayer(dt, ctrl);
   }
@@ -990,7 +1049,7 @@ export class Game {
     for (const npc of this.npcs) {
       if (npc.team === 'story') {
         const d = Math.hypot(npc.x - focus.x, npc.z - focus.z);
-        npc.actor.model.visible = d < 170;
+        npc.actor.model.visible = d < (this.quality === 'low' ? 120 : 170);
         npc.actor.model.position.set(npc.x, 0, npc.z);
         npc.actor.model.rotation.y = npc.yaw;
         if (d < 72) npc.actor.mixer.update(dt);
@@ -1004,8 +1063,9 @@ export class Game {
         npc.actor.model.visible = false;
         continue;
       }
+      const see = this.quality === 'low' ? 52 : 120;
       const d = Math.hypot(npc.x - focus.x, npc.z - focus.z);
-      npc.actor.model.visible = d < 120;
+      npc.actor.model.visible = d < see;
       if (!npc.alive) {
         npc.down += dt;
         npc.animLock = 5;
@@ -1019,7 +1079,7 @@ export class Game {
         }
         continue;
       }
-      if (d > 95) continue;
+      if (d > (this.quality === 'low' ? 48 : 95)) continue;
       npc.animLock = Math.max(0, npc.animLock - dt);
       npc.shootCd = Math.max(0, npc.shootCd - dt);
       const hostile = npc.state === 'fight' || (npc.team !== 'civ' && d < 55);
@@ -1568,8 +1628,13 @@ export class Game {
       npc.actor.model.rotation.y = npc.yaw;
       if (Math.hypot(npc.x - this.player.x, npc.z - this.player.z) < 72) npc.actor.mixer.update(step);
     }
+    const farDist = this.quality === 'low' ? 120 : 220;
     for (const v of this.vehicles) {
-      const far = Math.hypot(v.x - this.player.x, v.z - this.player.z) > 220 && v !== this.vehicle;
+      if (v.ai && this.race?.phase !== 'run' && this.race?.phase !== 'count') {
+        v.mesh.visible = false;
+        continue;
+      }
+      const far = Math.hypot(v.x - this.player.x, v.z - this.player.z) > farDist && v !== this.vehicle;
       v.mesh.visible = !far;
       if (far) continue;
       this.syncRide(v, step);
@@ -1724,6 +1789,11 @@ export class Game {
     if (this.vehicle?.kind === 'boat' && !inWater(this.vehicle.x, this.vehicle.z)) bits.push('快艇离开水面几乎不动');
     const here = this.nearestSpot();
     if (here) bits.push(here.prompt);
+    if (!this.race) {
+      const focus = this.focus();
+      const meet = ACTIVITIES.find((job) => job.kind === 'race' && dist2(focus.x, focus.z, job.x, job.z) < job.r * job.r);
+      if (meet) bits.push(`按 E 或互动键发车 · ${meet.name}`);
+    }
     if (this.mission?.id === 'pump' && this.mission.phase === 'goto') {
       const d = dist2(this.player.x, this.player.z, SPOTS.pump.x, SPOTS.pump.z);
       if (d < SPOTS.pump.r * SPOTS.pump.r) bits.push('按 E 启动拉盘');
@@ -1759,7 +1829,7 @@ export class Game {
     let bestD = Infinity;
     const here = this.focus();
     for (const v of this.vehicles) {
-      if (v === this.vehicle) continue;
+      if (v === this.vehicle || v.ai) continue;
       const reach = v.kind === 'plane' || v.kind === 'heli' ? 9 : v.kind === 'boat' ? 7 : 4.8;
       const d = Math.hypot(v.x - here.x, v.z - here.z);
       if (d < reach && d < bestD) {
@@ -1879,6 +1949,7 @@ export class Game {
     car.speed = 0;
     this.vehicle = null;
     this.actor.play('Idle', { fade: 0.1 });
+    if (this.race) this.abortRace('下车了，这场作废');
   }
 
   teleport(x, z, y = null) {
@@ -2124,11 +2195,14 @@ export class Game {
       this.input.exitLock();
       this.ui.showTitle();
       this.vehicle = null;
+      this.race = null;
+      this.ui.setRace('');
+      if (this.raceAiCar) this.raceAiCar.mesh.visible = false;
       this.leavePresence();
     }
   }
 
-  newGame() {
+  async newGame() {
     if (!this.ready) return;
     if (this.session && this.profile) this.asGuest = false;
     if (loadSave(this.saveUserId()) && !this.confirmNew) {
@@ -2137,6 +2211,7 @@ export class Game {
       return;
     }
     this.confirmNew = false;
+    await this.ensureWorldPeople();
     this.resetProgress();
     if (this.vehicle) this.exitVehicle();
     this.teleport(SPOTS.spawn.x, SPOTS.spawn.z, 0);
@@ -2149,8 +2224,9 @@ export class Game {
     this.save();
   }
 
-  continueGame() {
+  async continueGame() {
     if (this.session && this.profile) this.asGuest = false;
+    await this.ensureWorldPeople();
     const data = loadSave(this.saveUserId());
     if (!data && !(this.session && !this.asGuest && this.scoreFloor)) {
       this.ui.toast('没有存档');
@@ -2179,6 +2255,8 @@ export class Game {
     this.finishedJobs = new Set(data.finishedJobs || []);
     this.storyChapter = data.storyChapter || 0;
     this.daily = data.daily || null;
+    this.raceBest = readRaceBests(data.raceBest);
+    this.race = null;
     this.progress = restoreProgress(data);
     this.legacyAchievements = !Object.prototype.hasOwnProperty.call(data, 'achievements');
     this.player.hp = data.hp ?? 100;
@@ -2217,6 +2295,7 @@ export class Game {
       finishedJobs: [...this.finishedJobs],
       storyChapter: this.storyChapter,
       daily: this.daily,
+      raceBest: this.raceBest || {},
       quests: this.progress?.quests || null,
       achievements: this.progress?.achievements || [],
       stats: this.progress?.stats || null,
@@ -2347,20 +2426,30 @@ export class Game {
     this.routeMax = routeMax;
     this.routeCount = 0;
     this.jobMarks = ACTIVITIES.map((job) => {
+      const raceMark = job.kind === 'race';
       const mesh = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.85),
-        new THREE.MeshStandardMaterial({ color: 0x3df0ff, emissive: 0x1490aa, emissiveIntensity: 0.7 }),
+        new THREE.OctahedronGeometry(raceMark ? 1.15 : 0.85),
+        new THREE.MeshStandardMaterial({
+          color: raceMark ? 0xff4fa3 : 0x3df0ff,
+          emissive: raceMark ? 0xff2d78 : 0x1490aa,
+          emissiveIntensity: 0.85,
+        }),
       );
       mesh.position.set(job.x, 2.2, job.z);
       this.scene.add(mesh);
       return { job, mesh };
     });
-    this.raceMarks = RACE_GATES.map((gate) => {
+    this.raceMarks = [0, 1].map((i) => {
       const mesh = new THREE.Mesh(
-        new THREE.TorusGeometry(3.2, 0.16, 6, 16),
-        new THREE.MeshStandardMaterial({ color: 0xffe14a, emissive: 0xffb000, emissiveIntensity: 0.8 }),
+        new THREE.TorusGeometry(4.4, 0.18, 8, 20),
+        new THREE.MeshStandardMaterial({
+          color: i === 0 ? 0xffe14a : 0xff8a1e,
+          emissive: i === 0 ? 0xffb000 : 0xff4f16,
+          emissiveIntensity: i === 0 ? 1.1 : 0.45,
+          transparent: true,
+          opacity: i === 0 ? 0.95 : 0.45,
+        }),
       );
-      mesh.position.set(gate.x, 1.6, gate.z);
       mesh.visible = false;
       this.scene.add(mesh);
       return mesh;
@@ -2383,7 +2472,6 @@ export class Game {
     });
     this.skiff = skiff;
     this.scene.add(skiff);
-    this.spawnStoryCast();
   }
 
   level() {
@@ -2516,6 +2604,190 @@ export class Game {
     }
   }
 
+  beginRace(trackId) {
+    if (this.race) {
+      this.ui.toast('这场还没完');
+      return;
+    }
+    const track = trackById(trackId);
+    if (!track) return;
+    if (this.mission) {
+      this.ui.toast('先把当前任务做完，再来发车');
+      return;
+    }
+    let car = this.vehicle;
+    if (car && car.kind !== 'car' && car.kind !== 'bike') {
+      this.ui.toast('换一辆车或摩托再发车');
+      return;
+    }
+    if (!car) {
+      car = this.vehicles.find((item) => item.id === 'flame' && item.personal && !item.ai);
+      if (!car) car = this.makeVehicle('flame', track.start.x, track.start.z, track.start.yaw, { personal: true });
+      car.hotwired = true;
+      this.seatIn(car);
+    }
+    const yaw = track.start.yaw;
+    const rightX = Math.cos(yaw);
+    const rightZ = -Math.sin(yaw);
+    const backX = -Math.sin(yaw);
+    const backZ = -Math.cos(yaw);
+    const side = 5.4;
+    this.race = {
+      track,
+      phase: 'count',
+      count: 3,
+      gate: 0,
+      t0: this.time,
+      goFlash: 0,
+      grid: { x: track.start.x, z: track.start.z, yaw },
+      ai: {
+        x: track.start.x + rightX * side + backX * 1.2,
+        z: track.start.z + rightZ * side + backZ * 1.2,
+        yaw,
+        i: 0,
+        done: false,
+        cruise: track.cruise,
+        speed: 0,
+        gates: track.gates,
+      },
+    };
+    car.x = track.start.x;
+    car.z = track.start.z;
+    car.yaw = yaw;
+    car.speed = 0;
+    car.y = 0;
+    this.player.x = car.x;
+    this.player.z = car.z;
+    this.player.y = 0;
+    this.camYaw = yaw;
+    this.camDist = Math.max(this.camDist, this.layoutMode === 'port' ? 12 : 11);
+    this.camPitch = Math.max(0.28, Math.min(this.camPitch, 0.55));
+    this.lookSmooth?.set(car.x, 0, car.z);
+    if (this.raceAiCar) {
+      this.raceAiCar.x = this.race.ai.x;
+      this.raceAiCar.z = this.race.ai.z;
+      this.raceAiCar.yaw = yaw;
+      this.raceAiCar.speed = 0;
+      this.raceAiCar.mesh.visible = true;
+    }
+    this.objectiveSig = '';
+    this.ui.toast(`${track.name} · 踩住油门，冲过黄环`);
+    this.audio.resume();
+  }
+
+  seatIn(car) {
+    this.vehicle = car;
+    car.mesh.add(this.actor.model);
+    this.actor.play('SitDown', { once: true, hold: true, fade: 0.1 });
+    this.camYaw = car.yaw;
+  }
+
+  abortRace(reason) {
+    if (!this.race) return;
+    this.race = null;
+    this.ui.setRace('');
+    this.raceMarks?.forEach((mesh) => {
+      mesh.visible = false;
+    });
+    if (this.raceAiCar) this.raceAiCar.mesh.visible = false;
+    this.objectiveSig = '';
+    if (reason) this.ui.toast(reason);
+  }
+
+  placeRaceRing(mesh, gate, next) {
+    if (!mesh || !gate) return;
+    const dx = (next?.x ?? gate.x) - gate.x;
+    const dz = (next?.z ?? gate.z) - gate.z;
+    const len = Math.hypot(dx, dz);
+    mesh.visible = true;
+    mesh.position.set(gate.x, 1.35, gate.z);
+    mesh.rotation.set(0, len > 0.5 ? Math.atan2(dx, dz) : 0, 0);
+  }
+
+  updateStreetRace(dt, here) {
+    const race = this.race;
+    if (!race) return;
+    const track = race.track;
+    if (race.phase === 'count') {
+      race.count -= dt;
+      const n = Math.max(1, Math.min(3, Math.ceil(race.count - 0.001)));
+      this.ui.setRace(race.count > 0 ? String(n) : '出发');
+      this.showMarker(track.gates[0], `${track.name} · 准备 ${n}`);
+      this.placeRaceRing(this.raceMarks[0], track.gates[0], track.gates[1]);
+      if (this.raceMarks[1]) this.raceMarks[1].visible = false;
+      if (race.count <= 0) {
+        race.phase = 'run';
+        race.t0 = this.time;
+        race.goFlash = 0.7;
+        this.ui.setRace('出发');
+      }
+      return;
+    }
+    if (!this.vehicle) {
+      this.abortRace('下车了，这场作废');
+      return;
+    }
+    race.goFlash = Math.max(0, (race.goFlash || 0) - dt);
+    this.ui.setRace(race.goFlash > 0 ? '出发' : '');
+    stepRacer(race.ai, dt);
+    if (this.raceAiCar) {
+      this.raceAiCar.x = race.ai.x;
+      this.raceAiCar.z = race.ai.z;
+      this.raceAiCar.yaw = race.ai.yaw;
+      this.raceAiCar.speed = race.ai.speed;
+      this.raceAiCar.mesh.visible = true;
+    }
+    const gate = track.gates[race.gate];
+    const after = track.gates[race.gate + 1];
+    this.placeRaceRing(this.raceMarks[0], gate, after || gate);
+    this.placeRaceRing(this.raceMarks[1], after, track.gates[race.gate + 2] || after);
+    if (this.raceMarks[1]) this.raceMarks[1].visible = !!after;
+    if (gate && dist2(here.x, here.z, gate.x, gate.z) < 10 * 10) race.gate += 1;
+    const elapsed = Math.max(0, this.time - race.t0);
+    if (elapsed > 100) {
+      this.abortRace('超时了，这场不算');
+      return;
+    }
+    if (race.gate < track.gates.length) {
+      const place = race.ai.done ? 2 : (race.ai.i > race.gate ? 2 : 1);
+      const best = this.raceBest[track.id];
+      const bestText = best ? ` · 纪录 ${formatRaceTime(best)}` : '';
+      this.showMarker(track.gates[race.gate], `${track.name} ${race.gate + 1}/${track.gates.length} · ${formatRaceTime(elapsed)} · 第${place}${bestText}`);
+      return;
+    }
+    this.finishRace(elapsed);
+  }
+
+  finishRace(seconds) {
+    const race = this.race;
+    if (!race) return;
+    const track = race.track;
+    const place = race.ai.done ? 2 : 1;
+    const prize = place === 1 ? track.prize.win : track.prize.place;
+    const prev = this.raceBest[track.id];
+    const rounded = Math.round(seconds * 10) / 10;
+    const record = !prev || rounded < prev;
+    if (record) this.raceBest[track.id] = rounded;
+    this.race = null;
+    this.ui.setRace('');
+    this.raceMarks?.forEach((mesh) => {
+      mesh.visible = false;
+    });
+    if (this.raceAiCar) this.raceAiCar.mesh.visible = false;
+    this.usd += prize;
+    this.rep += place === 1 ? 36 : 14;
+    this.finishedJobs.add(track.activity);
+    this.walletSig = '';
+    this.objectiveSig = '';
+    this.audio.success();
+    const bestNote = record ? '，新纪录' : (prev ? `，纪录 ${formatRaceTime(prev)}` : '');
+    this.ui.toast(`${track.name} 第${place}名 ${formatRaceTime(rounded)}${bestNote}，+${fmtUsd(prize)}`);
+    this.noteDaily('race');
+    this.noteTrack('race', 1);
+    if (place === 1) this.noteTrack('raceWin', 1);
+    if (rounded <= track.target) this.noteTrack('hotlap', 1);
+  }
+
   updateLife(dt) {
     if (!this.daily) this.daily = dailyFor(new Date().toISOString().slice(0, 10));
     this.ensureQuests();
@@ -2547,34 +2819,19 @@ export class Game {
       this.skiff.rotation.y = Math.PI / 2;
     }
     for (const mark of this.jobMarks || []) {
-      const done = this.finishedJobs.has(mark.job.id) && mark.job.kind !== 'atm' && mark.job.kind !== 'guns' && mark.job.kind !== 'clothes';
+      const done = this.finishedJobs.has(mark.job.id) && mark.job.kind !== 'atm' && mark.job.kind !== 'guns' && mark.job.kind !== 'clothes' && mark.job.kind !== 'race';
       mark.mesh.visible = !done && Math.hypot(mark.job.x - here.x, mark.job.z - here.z) < 220;
       mark.mesh.rotation.y = this.time;
       mark.mesh.position.y = 2.1 + Math.sin(this.time * 2 + mark.job.x) * 0.15;
     }
     if (this.race) {
-      const gate = RACE_GATES[this.race.i];
-      this.raceMarks.forEach((mesh, i) => {
-        mesh.visible = i === this.race.i;
-      });
-      if (gate && dist2(here.x, here.z, gate.x, gate.z) < 6 * 6) {
-        this.race.i += 1;
-        if (this.race.i >= RACE_GATES.length) {
-          const seconds = Math.max(1, this.time - this.race.t0);
-          this.race = null;
-          this.usd += 1200;
-          this.rep += 30;
-          this.finishedJobs.add('race');
-          this.noteDaily('race');
-          this.noteTrack('race', 1);
-          this.walletSig = '';
-          this.audio.success();
-          this.ui.toast(`竞速完成 ${seconds.toFixed(1)} 秒，+$1,200`);
-        }
-      }
-    } else this.raceMarks?.forEach((mesh) => {
+      this.updateStreetRace(dt, here);
+      return;
+    }
+    this.raceMarks?.forEach((mesh) => {
       mesh.visible = false;
     });
+    this.ui.setRace('');
     if (this.mission) return;
     if (this.guideStep < GUIDE.length) {
       const step = GUIDE[this.guideStep];
@@ -2623,7 +2880,7 @@ export class Game {
     let best = null;
     let bestD = Infinity;
     for (const job of ACTIVITIES) {
-      if (this.finishedJobs.has(job.id) && job.kind !== 'atm' && job.kind !== 'guns' && job.kind !== 'clothes' && job.kind !== 'stunt') continue;
+      if (this.finishedJobs.has(job.id) && job.kind !== 'atm' && job.kind !== 'guns' && job.kind !== 'clothes' && job.kind !== 'stunt' && job.kind !== 'race') continue;
       const d = dist2(here.x, here.z, job.x, job.z);
       if (d < bestD) {
         bestD = d;
@@ -2690,8 +2947,7 @@ export class Game {
         return true;
       }
       if (job.kind === 'race') {
-        this.race = { i: 0, t0: this.time };
-        this.ui.toast('竞速开始，穿过黄色环');
+        this.beginRace(job.track);
         return true;
       }
       if (job.kind === 'taxi') {
@@ -2812,6 +3068,19 @@ export class Game {
       });
       ctx.stroke();
     }
+    ctx.fillStyle = '#ff4fa3';
+    for (const job of ACTIVITIES) {
+      if (job.kind !== 'race') continue;
+      ctx.beginPath();
+      ctx.arc(toX(job.x), toY(job.z), 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (this.race?.track) {
+      ctx.fillStyle = '#ffe14a';
+      for (const gate of this.race.track.gates) {
+        ctx.fillRect(toX(gate.x) - 2, toY(gate.z) - 2, 4, 4);
+      }
+    }
     if (this.beacon?.visible) {
       ctx.fillStyle = '#ff8a1e';
       ctx.beginPath();
@@ -2872,6 +3141,8 @@ export class Game {
     this.rep = 0;
     this.finishedJobs = new Set();
     this.race = null;
+    this.raceBest = {};
+    this.ui.setRace('');
     this.taxi = null;
     this.goalHint = null;
     this.storyChapter = 0;

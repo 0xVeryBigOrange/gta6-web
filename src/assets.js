@@ -153,11 +153,25 @@ async function loadGltf(loader, url) {
   return loader.loadAsync(url);
 }
 
-export async function loadGameAssets(renderer, onProgress) {
+const EXTRA_PEOPLE = ['female', 'worker', 'suit', 'classy', 'suitf', 'casual2'];
+
+export async function loadExtraPeople(assets) {
+  const loader = new GLTFLoader();
+  await Promise.all(EXTRA_PEOPLE.map(async (name) => {
+    if (assets.people[name]) return;
+    const gltf = await loadGltf(loader, `${BASE}models/people/${name}.glb`);
+    const template = SkeletonUtils.clone(gltf.scene);
+    paintRoot(template, OUTFITS[name]);
+    groundCenter(template, { axis: 'y', value: 1.84 });
+    assets.people[name] = { template, clips: aliasClips(gltf.animations) };
+  }));
+}
+
+export async function loadGameAssets(renderer, onProgress, quality = 'high') {
   const loader = new GLTFLoader();
   const jobs = [];
-  const peopleFiles = ['male', 'female', 'worker', 'suit', 'classy', 'suitf', 'casual2'];
-  const carFiles = ['sedan', 'suv', 'hatchback-sports', 'police', 'taxi', 'race'];
+  const peopleFiles = ['male'];
+  const carFiles = ['sedan', 'suv', 'hatchback-sports', 'police', 'taxi', 'race', 'sedan-sports'];
   const push = (key, url) => jobs.push({ key, url });
   for (const name of peopleFiles) push(`people:${name}`, `${BASE}models/people/${name}.glb`);
   for (const name of carFiles) push(`car:${name}`, `${BASE}models/car/${name}.glb`);
@@ -192,7 +206,8 @@ export async function loadGameAssets(renderer, onProgress) {
   for (const name of carFiles) {
     const root = loaded[`car:${name}`].scene.clone(true);
     tuneStatic(root);
-    groundCenter(root, { axis: 'z', value: name === 'suv' ? 4.9 : 4.5 });
+    const length = name === 'suv' ? 4.9 : name === 'sedan-sports' ? 4.7 : 4.5;
+    groundCenter(root, { axis: 'z', value: length });
     cars[name] = root;
   }
 
@@ -224,7 +239,7 @@ export async function loadGameAssets(renderer, onProgress) {
   tuneStatic(parasol);
   groundCenter(parasol, { axis: 'y', value: 2.6 });
 
-  const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy?.() || 4);
+  const aniso = quality === 'low' ? 2 : Math.min(8, renderer.capabilities.getMaxAnisotropy?.() || 4);
   const texLoader = new THREE.TextureLoader();
   const loadSurface = async (url, colorSpace) => {
     try {

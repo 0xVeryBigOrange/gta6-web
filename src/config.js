@@ -34,6 +34,7 @@ export const VEHICLES = [
   { id: 'sport', name: '落日掀背', blurb: '直道凶，弯里要收油', price: 16000, kind: 'car', file: 'hatchback-sports', max: 58, accel: 36, grip: 0.88, seat: 0.12 },
   { id: 'taxi', name: '夜班出租', blurb: '市区巡游，转向老实', price: 4500, kind: 'car', file: 'taxi', max: 44, accel: 24, grip: 1, seat: 0.15 },
   { id: 'race', name: '赛道橙', blurb: '油门很冲，抓地一般', price: 24000, kind: 'car', file: 'race', max: 68, accel: 44, grip: 0.8, seat: 0.08 },
+  { id: 'flame', name: '橙焰超跑', blurb: '地下赛的车。直道极快，弯里要收一点', price: 36000, kind: 'car', file: 'sedan-sports', max: 78, accel: 52, grip: 0.94, seat: 0.1 },
   { id: 'police', name: 'SEC 巡逻车', blurb: '征用来的，车行不卖', price: 0, kind: 'car', file: 'police', max: 52, accel: 32, grip: 1.1, seat: 0.15, unsold: true },
   { id: 'bike', name: '链轮摩托', blurb: '窄、快、会侧倾', price: 5000, kind: 'bike', max: 56, accel: 40, grip: 0.7, seat: 0.42 },
   { id: 'boat', name: '海岸快艇', blurb: '离开水面就几乎爬不动', price: 12000, kind: 'boat', file: 'boat-speed-a', max: 38, accel: 18, grip: 0.55, seat: 0.55 },

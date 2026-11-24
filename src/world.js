@@ -89,7 +89,8 @@ export function buildWorld(scene, assets, quality = 'high') {
   const root = new THREE.Group();
   root.name = 'city';
   scene.add(root);
-  const detail = quality === 'high' ? 380 : 210;
+  const detail = quality === 'high' ? 380 : 140;
+  const lite = quality !== 'high';
   initFacades(assets.surfaces?.plaster?.image || null, quality === 'high' ? 8 : 4);
 
   const chunkOf = (x, z) => {
@@ -445,21 +446,24 @@ export function buildWorld(scene, assets, quality = 'high') {
     chunkOf(x, z).props.add(mesh);
   };
 
-  for (let i = 0; i < downtownX.length; i += 1) {
-    for (let j = 0; j < downtownZ.length; j += 1) {
-      if ((i + j) % 2 === 0) placeProp(assets.light, downtownX[i] + 9, downtownZ[j] + 9, rng() * 0.4);
+  if (!lite) {
+    for (let i = 0; i < downtownX.length; i += 1) {
+      for (let j = 0; j < downtownZ.length; j += 1) {
+        if ((i + j) % 2 === 0) placeProp(assets.light, downtownX[i] + 9, downtownZ[j] + 9, rng() * 0.4);
+      }
     }
+    for (let x = -160; x <= 460; x += 34) placeProp(assets.light, x, 188, 0);
+    for (let i = 0; i < 6; i += 1) placeProp(assets.awning, -16 + i * 16, 72, 0, 1);
   }
-  for (let x = -160; x <= 460; x += 34) placeProp(assets.light, x, 188, 0);
-  for (let x = -150; x <= 460; x += 18) {
+  const palmStep = lite ? 40 : 18;
+  for (let x = -150; x <= 460; x += palmStep) {
     placeProp(rng() > 0.45 ? assets.palm : assets.palmTall, x, 312 + (rng() - 0.5) * 16, rng() * 6, 0.9 + rng() * 0.4);
-    if (rng() > 0.55) placeProp(assets.parasol, x + 5, 255, rng() * 3, 1);
+    if (!lite && rng() > 0.55) placeProp(assets.parasol, x + 5, 255, rng() * 3, 1);
   }
-  for (let i = 0; i < 6; i += 1) {
+  for (let i = 0; i < (lite ? 3 : 6); i += 1) {
     placeProp(assets.palm, -150 + i * 52, 10, rng() * 6, 0.85);
     placeProp(assets.palm, -150 + i * 52, -10, rng() * 6, 0.8);
   }
-  for (let i = 0; i < 6; i += 1) placeProp(assets.awning, -16 + i * 16, 72, 0, 1);
 
   const lampGeo = new THREE.SphereGeometry(0.22, 10, 8);
   const lampMat = trackGlow(new THREE.MeshStandardMaterial({
@@ -573,6 +577,8 @@ export function buildWorld(scene, assets, quality = 'high') {
   putSign('机场', 'AIRPORT', -360, -430, 0);
   putSign('港口', 'MARINA', -220, 220, -Math.PI / 2);
   putSign('ORNG', '海滩', 200, 230, Math.PI, 6, 7);
+  putSign('地下赛', '霓虹环线', 116, 14, 0, 5.2, 6.2);
+  putSign('海滩赛', '折返', -150, 210, Math.PI, 5.2, 6.2);
 
   const blocked = (x, z, radius, mode) => {
     if (x < WORLD.minX || x > WORLD.maxX || z < WORLD.minZ || z > WORLD.maxZ) return true;
@@ -591,6 +597,10 @@ export function buildWorld(scene, assets, quality = 'high') {
     if (!blocked(px, nz, radius, mode)) pz = nz;
     return { x: px, z: pz };
   };
+
+  let lodX = 1e9;
+  let lodZ = 1e9;
+  let lodAt = -1;
 
   return {
     roads,
@@ -614,10 +624,17 @@ export function buildWorld(scene, assets, quality = 'high') {
           bulb.material.emissiveIntensity = on ? 2.4 : 0.03;
         });
       }
+      const moved = Math.hypot(px - lodX, pz - lodZ);
+      if (lodAt >= 0 && moved < (lite ? 10 : 5) && time - lodAt < 0.45) return;
+      lodX = px;
+      lodZ = pz;
+      lodAt = time;
+      const seeCity = lite ? 420 : 560;
+      const seeProps = lite ? 150 : 280;
       for (const chunk of chunks.values()) {
         const d = Math.hypot(chunk.cx - px, chunk.cz - pz);
-        chunk.group.visible = d < 560;
-        chunk.props.visible = d < 280;
+        chunk.group.visible = d < seeCity;
+        chunk.props.visible = d < seeProps;
       }
       for (let i = 0; i < buildings.length; i += 1) {
         const b = buildings[i];

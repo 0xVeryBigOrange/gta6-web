@@ -96,6 +96,20 @@ canvas { display: block; width: 100%; height: 100%; }
   text-align: center;
 }
 #objective:empty { display: none !important; }
+#race-hud {
+  display: none;
+  position: absolute;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 84px;
+  font-weight: 800;
+  color: #fff6ea;
+  letter-spacing: 4px;
+  text-shadow: 0 8px 24px #000, 0 0 18px #ff8a1e;
+  pointer-events: none;
+}
+#race-hud.on { display: block; }
 
 #wallet {
   position: absolute;
@@ -374,6 +388,7 @@ html.phone #ticker {
   padding: 4px 10px;
   font-size: 12px;
 }
+html.phone #race-hud { font-size: 64px; top: 34%; }
 html.phone #objective {
   top: calc(70px + var(--sat));
   left: calc(8px + var(--sal));

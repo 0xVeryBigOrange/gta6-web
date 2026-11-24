@@ -12,7 +12,7 @@
 ## 城市场景道具
 
 - Kenney，CC0。经 [shorepine/kenney](https://github.com/shorepine/kenney) 镜像。
-- 车：City Kit / Car Kit 的 sedan、suv、hatchback-sports、police、taxi、race。
+- 车：City Kit / Car Kit 的 sedan、suv、hatchback-sports、police、taxi、race、sedan-sports（橙焰超跑）。
 - 船：boat-speed-a。棕榈：tree_palmTall、tree_palmDetailedTall。路灯和路牌、遮阳棚、太阳伞、手枪。
 - 这些 GLB 引用各自目录里的 `Textures/colormap.png`。
 
@@ -27,7 +27,7 @@ Poly Haven，CC0。作者见各资产页。
 - 楼立面底纹 [painted_plaster_wall](https://polyhaven.com/a/painted_plaster_wall) 1K。
 - 日照 [kloofendal_48d_partly_cloudy_puresky](https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky) 1K HDR，Greg Zaal。作环境反射。旧的 `venice_sunset` 1K HDR 仍留在仓库里作备用。
 
-贴图是 1K JPEG，没有再压成 KTX2。手机自动关掉泛光和 FXAA，阴影贴图用 512。
+贴图压成 768 JPEG。手机自动关掉泛光、FXAA 和后期合成，阴影用普通 PCF、贴图 512，远处楼换成色块，路灯杆和遮阳棚不加载。角色文件去掉了用不到的动作片段。行人模型在标题出来之后再加载。
 
 ## 项目内制作
 
