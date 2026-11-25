@@ -1,6 +1,41 @@
 import { COINS, HEADLINES, MISSIONS } from './config.js';
 import { fmtNum, fmtUsd } from './util.js';
 
+function paintTurfMap(canvas, rows, player) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  const minX = -220;
+  const maxX = 540;
+  const minZ = -220;
+  const maxZ = 260;
+  const toX = (x) => ((x - minX) / (maxX - minX)) * (w - 20) + 10;
+  const toY = (z) => ((z - minZ) / (maxZ - minZ)) * (h - 20) + 10;
+  ctx.fillStyle = '#10261c';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#1c6e86';
+  ctx.fillRect(toX(-210), toY(188), toX(520) - toX(-210), toY(360) - toY(188));
+  for (const row of rows) {
+    ctx.globalAlpha = 0.78;
+    ctx.fillStyle = row.color;
+    const x0 = toX(row.x - row.hw);
+    const y0 = toY(row.z - row.hd);
+    ctx.fillRect(x0, y0, toX(row.x + row.hw) - x0, toY(row.z + row.hd) - y0);
+  }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#fff6ea';
+  ctx.font = '12px sans-serif';
+  for (const row of rows) {
+    ctx.fillText(row.name, toX(row.x) - 22, toY(row.z));
+  }
+  if (player) {
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(toX(player.x), toY(player.z), 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 export function createUI(root) {
   root.innerHTML = `
     <canvas id="view"></canvas>
@@ -72,7 +107,7 @@ export function createUI(root) {
           <li>直升机：Shift 或空格上升，Ctrl 下降，W/S 前后，A/D 转向</li>
           <li>船只能在海里和港口像样地开</li>
           <li>鼠标左键攻击。1 拳头，2 手枪，3 步枪，R 换弹</li>
-          <li>E：交易所、任务、车行、房产，也可以和故事人物说话。地图上的粉标是地下赛，按 E 或互动键发车。M 任务，J 或「日」打开每日任务和成就，H 帮助，Esc 暂停，T 挥手</li>
+          <li>E：交易所、任务、车行、房产，也可以和故事人物说话。地图上的粉标是地下赛，按 E 或互动键发车。色块是帮派地盘，走到敌旗按 E 宣战。M 任务，J 或「日」打开每日、成就和地盘，H 帮助，Esc 暂停，T 挥手</li>
           <li>倒下会在橙子医院醒来。手机：左下摇杆移动，右半屏拖动环顾，右侧按钮开火。横屏更顺手</li>
         </ul>
         <p class="fine">打开菜单时城市时间会暂停。游客进度留在本地。登录后，净值、声望和故事章节会同步到排行榜。每日三单按新加坡时间零点刷新，成就记在同一份存档里。</p>
@@ -129,6 +164,7 @@ export function createUI(root) {
         <div class="board-tabs">
           <button type="button" data-journal="daily">每日</button>
           <button type="button" data-journal="ach">成就</button>
+          <button type="button" data-journal="turf">地盘</button>
         </div>
         <p id="journal-msg" class="fine"></p>
         <div id="journal-list"></div>
@@ -642,19 +678,35 @@ export function createUI(root) {
       });
       $('#journal-msg').textContent = tab === 'daily'
         ? `${model.day} · 新加坡时间 0 点刷新 · 已完成 ${model.done}/${model.total}`
-        : `已解锁 ${model.unlocked}/${model.achievements.length}`;
+        : tab === 'turf'
+          ? (model.turfLine || '')
+          : `已解锁 ${model.unlocked}/${model.achievements.length}`;
       const list = $('#journal-list');
       list.replaceChildren();
-      const rows = tab === 'daily' ? model.items : model.achievements;
+      if (tab === 'turf') {
+        const canvas = document.createElement('canvas');
+        canvas.id = 'turf-map';
+        canvas.width = 560;
+        canvas.height = 280;
+        list.appendChild(canvas);
+        paintTurfMap(canvas, model.turfs || [], model.player);
+      }
+      const rows = tab === 'daily' ? model.items : tab === 'turf' ? model.turfs : model.achievements;
       for (const row of rows) {
         const el = document.createElement('div');
         el.className = `journal-row${row.done ? ' done' : ''}`;
         const name = document.createElement('b');
-        name.textContent = row.done ? `${row.name} · 已完成` : row.name;
+        if (row.color) {
+          const swatch = document.createElement('i');
+          swatch.className = 'turf-swatch';
+          swatch.style.background = row.color;
+          name.append(swatch, document.createTextNode(row.done ? `${row.name} · 已占领` : row.name));
+        } else name.textContent = row.done ? `${row.name} · 已完成` : row.name;
         const desc = document.createElement('span');
         desc.textContent = row.desc || `${row.have}/${row.need}`;
         const meta = document.createElement('em');
-        meta.textContent = row.desc ? `${Math.min(row.have, row.need)}/${row.need} · +${fmtUsd(row.reward)}` : `+${fmtUsd(row.reward)}`;
+        if (row.meta) meta.textContent = row.meta;
+        else meta.textContent = row.desc ? `${Math.min(row.have, row.need)}/${row.need} · +${fmtUsd(row.reward)}` : `+${fmtUsd(row.reward)}`;
         el.append(name, desc, meta);
         list.appendChild(el);
       }

@@ -10,7 +10,7 @@ import { createInput } from './input.js';
 import { createAudio } from './audio.js';
 import { loadExtraPeople, loadGameAssets } from './assets.js';
 import { buildWorld } from './world.js';
-import { createActor, locomotion } from './actors.js';
+import { createActor, dressGang, dressPed, locomotion } from './actors.js';
 import { buildBike, buildHeli, buildPlane, spinParts } from './rides.js';
 import {
   COINS,
@@ -29,6 +29,18 @@ import { loadSave, writeSave } from './save.js';
 import { angNorm, clamp, dist2, fmtNum, fmtUsd, mulberry32 } from './util.js';
 import { ACTIVITIES, GUIDE, dailyFor, levelFromRep, routeOnRoads } from './citylife.js';
 import { formatRaceTime, readRaceBests, stepRacer, trackById } from './racing.js';
+import {
+  GANGS,
+  TURFS,
+  flagHere,
+  gangOf,
+  incomePerMin,
+  outsideTurf,
+  readTurf,
+  turfById,
+  wavePoints,
+  waveSize,
+} from './turf.js';
 import { ACHIEVEMENTS, freshQuests, gameDay, grantProgress, questById, restoreProgress } from './progress.js';
 import {
   cloud,
@@ -116,6 +128,13 @@ export class Game {
     this.finishedJobs = new Set();
     this.race = null;
     this.raceBest = {};
+    this.turf = readTurf(null);
+    this.war = null;
+    this.raid = null;
+    this.raidClock = 110;
+    this.turfPay = 0;
+    this.turfTold = false;
+    this.gang = null;
     this.taxi = null;
     this.atmUse = 0;
     this.eventTimer = 20;
@@ -219,6 +238,20 @@ export class Game {
       grant: (track, amount = 1) => this.noteTrack(track, amount),
       progress: () => this.progress,
       startRace: (id) => this.beginRace(id),
+      startWar: (id) => this.beginWar(id || 'west'),
+      forceRaid: () => this.beginRaid(true),
+      killGang: () => {
+        for (const npc of this.gang || []) {
+          if (npc.alive) this.damageNpc(npc, 999);
+        }
+      },
+      turfState: () => ({
+        owned: [...this.turf.owned],
+        war: this.war?.id || '',
+        raid: this.raid?.id || '',
+        alive: this.gangAlive(),
+        income: incomePerMin(this.turf.owned),
+      }),
       renderFrame: () => this.renderFrame(),
     };
   }
@@ -723,6 +756,7 @@ export class Game {
         npc.z = 208;
         npc.behavior = 'idle';
       }
+      dressPed(npc.actor, i);
       this.npcs.push(npc);
     }
     const copKind = this.assets.people.suit ? 'suit' : 'male';
@@ -757,6 +791,7 @@ export class Game {
       this.updateWanted(dt);
       this.updateMission(dt);
       this.updateLife(dt);
+      this.updateTurf(dt);
       this.updateGps();
       this.updateCoins();
       this.updateRemotes(dt);
@@ -1063,7 +1098,8 @@ export class Game {
         npc.actor.model.visible = false;
         continue;
       }
-      const see = this.quality === 'low' ? 52 : 120;
+      const gangWar = npc.team === 'gang' && npc.alive;
+      const see = gangWar ? 160 : (this.quality === 'low' ? 52 : 120);
       const d = Math.hypot(npc.x - focus.x, npc.z - focus.z);
       npc.actor.model.visible = d < see;
       if (!npc.alive) {
@@ -1079,7 +1115,7 @@ export class Game {
         }
         continue;
       }
-      if (d > (this.quality === 'low' ? 48 : 95)) continue;
+      if (d > (gangWar ? 150 : this.quality === 'low' ? 48 : 95)) continue;
       npc.animLock = Math.max(0, npc.animLock - dt);
       npc.shootCd = Math.max(0, npc.shootCd - dt);
       const hostile = npc.state === 'fight' || (npc.team !== 'civ' && d < 55);
@@ -1095,11 +1131,14 @@ export class Game {
         else if (d > 2.1 && !npc.armed) this.stepNpc(npc, toward, 4.6, dt);
         else npc.speed = 0;
         if (npc.armed && d < 26 && npc.shootCd <= 0 && this.clearLos(npc.x, npc.z, focus.x, focus.z)) {
-          npc.shootCd = 0.95;
+          npc.shootCd = npc.team === 'gang' ? 1.35 : 0.95;
           npc.actor.play('Shoot_OneHanded', { once: true, fade: 0.05 });
           npc.animLock = 0.35;
           this.spark(focus.x, 1.2, focus.z);
-          if (this.invuln <= 0 && d < 28) this.hurt(npc.team === 'police' ? 8 : 7);
+          if (this.invuln <= 0 && d < 28) {
+            const bite = npc.team === 'police' ? 8 : npc.team === 'gang' ? 4 : 7;
+            this.hurt(bite);
+          }
         } else if (!npc.armed && d < 2.05 && npc.shootCd <= 0) {
           npc.shootCd = 0.7;
           npc.actor.play('Punch', { once: true, fade: 0.05 });
@@ -1288,6 +1327,7 @@ export class Game {
     this.ammo.pistol.mag = WEAPONS.pistol.mag;
     this.ammo.rifle.mag = WEAPONS.rifle.mag;
     if (this.vehicle) this.exitVehicle();
+    if (this.war || this.raid) this.abortTurf('送到医院，地盘战中断');
     this.teleport(SPOTS.hospital.x, SPOTS.hospital.z, 0);
     this.ensurePolice(true);
     const failed = this.mission && (['sec', 'rug', 'harbor'].includes(this.mission.id) || this.mission.id === 'story-vault');
@@ -1422,6 +1462,7 @@ export class Game {
       return;
     }
     if (!mission) {
+      if (this.war || this.raid) return;
       this.beacon.visible = false;
       if (this.objectiveSig !== 'idle') {
         this.objectiveSig = 'idle';
@@ -1794,6 +1835,15 @@ export class Game {
       const meet = ACTIVITIES.find((job) => job.kind === 'race' && dist2(focus.x, focus.z, job.x, job.z) < job.r * job.r);
       if (meet) bits.push(`按 E 或互动键发车 · ${meet.name}`);
     }
+    if (!this.war && !this.raid && !this.race && !this.mission) {
+      const focus = this.focus();
+      const turf = flagHere(focus.x, focus.z);
+      if (turf) {
+        const owner = this.ownsTurf(turf.id) ? '橙焰帮' : gangOf(turf.gang).name;
+        const verb = this.ownsTurf(turf.id) ? '已是你的地盘' : `按 E 向${owner}宣战`;
+        bits.push(`${verb} · ${turf.name}`);
+      }
+    }
     if (this.mission?.id === 'pump' && this.mission.phase === 'goto') {
       const d = dist2(this.player.x, this.player.z, SPOTS.pump.x, SPOTS.pump.z);
       if (d < SPOTS.pump.r * SPOTS.pump.r) bits.push('按 E 启动拉盘');
@@ -1848,6 +1898,7 @@ export class Game {
     if (this.tryStoryTalk()) return;
     if (this.storyInteract()) return;
     if (this.tryActivity()) return;
+    if (this.tryTurf()) return;
     if (!this.mission && this.guideStep < GUIDE.length && GUIDE[this.guideStep].until === 'interact') {
       this.guideStep += 1;
       this.rep += 40;
@@ -2049,6 +2100,10 @@ export class Game {
       this.ui.toast('先完成或放弃当前任务');
       return;
     }
+    if (this.war || this.raid) {
+      this.ui.toast('先把地盘战打完');
+      return;
+    }
     if (this.done.has(id)) {
       /* 可以重做已经完成的单 */
     }
@@ -2190,7 +2245,8 @@ export class Game {
     } else if (mode === 'pause') {
       this.input.exitLock();
       const net = COINS.reduce((sum, coin) => sum + this.bal[coin.id] * getPrices()[coin.id], this.usd);
-      this.ui.showPause(`${this.displayName()} · 现金 ${fmtUsd(this.usd)} · 净值 ${fmtUsd(net)} · 声望 ${this.rep} · 故事 ${Math.min(this.storyChapter + 1, CHAPTERS.length)}/${CHAPTERS.length}`);
+      const held = this.turf?.owned.size || 0;
+      this.ui.showPause(`${this.displayName()} · 现金 ${fmtUsd(this.usd)} · 净值 ${fmtUsd(net)} · 声望 ${this.rep} · 地盘 ${held} · 故事 ${Math.min(this.storyChapter + 1, CHAPTERS.length)}/${CHAPTERS.length}`);
     } else if (mode === 'title') {
       this.input.exitLock();
       this.ui.showTitle();
@@ -2198,6 +2254,7 @@ export class Game {
       this.race = null;
       this.ui.setRace('');
       if (this.raceAiCar) this.raceAiCar.mesh.visible = false;
+      this.abortTurf('');
       this.leavePresence();
     }
   }
@@ -2256,6 +2313,13 @@ export class Game {
     this.storyChapter = data.storyChapter || 0;
     this.daily = data.daily || null;
     this.raceBest = readRaceBests(data.raceBest);
+    this.turf = readTurf(data.turf);
+    this.war = null;
+    this.raid = null;
+    this.raidClock = 110;
+    this.turfPay = 0;
+    this.abortTurf('');
+    this.refreshFlags();
     this.race = null;
     this.progress = restoreProgress(data);
     this.legacyAchievements = !Object.prototype.hasOwnProperty.call(data, 'achievements');
@@ -2271,10 +2335,8 @@ export class Game {
     this.walletSig = '';
     this.ensurePolice(true);
     this.pushPrices();
-    if (this.legacyAchievements) {
-      this.legacyAchievements = false;
-      this.noteTrack(null, 0);
-    }
+    if (this.legacyAchievements) this.legacyAchievements = false;
+    this.noteTrack(null, 0, { turfHeld: this.turf.owned.size });
   }
 
   save() {
@@ -2296,6 +2358,11 @@ export class Game {
       storyChapter: this.storyChapter,
       daily: this.daily,
       raceBest: this.raceBest || {},
+      turf: {
+        owned: [...(this.turf?.owned || [])],
+        taken: this.turf?.taken || 0,
+        defended: this.turf?.defended || 0,
+      },
       quests: this.progress?.quests || null,
       achievements: this.progress?.achievements || [],
       stats: this.progress?.stats || null,
@@ -2472,6 +2539,324 @@ export class Game {
     });
     this.skiff = skiff;
     this.scene.add(skiff);
+    this.buildFlags();
+  }
+
+  ownsTurf(id) {
+    return !!this.turf?.owned.has(id);
+  }
+
+  heldCount() {
+    return this.turf?.owned.size || 0;
+  }
+
+  gangAlive() {
+    return (this.gang || []).filter((npc) => npc.alive).length;
+  }
+
+  buildFlags() {
+    this.flags = TURFS.map((turf) => {
+      const group = new THREE.Group();
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.07, 0.09, 3.1, 6),
+        new THREE.MeshStandardMaterial({ color: 0x2c261c, roughness: 0.7 }),
+      );
+      pole.position.y = 1.55;
+      pole.castShadow = false;
+      const clothMat = new THREE.MeshStandardMaterial({
+        color: 0xff6a14,
+        emissive: 0xff6a14,
+        emissiveIntensity: 0.35,
+        side: THREE.DoubleSide,
+        roughness: 0.55,
+      });
+      const cloth = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 1.05), clothMat);
+      cloth.position.set(0.9, 2.7, 0);
+      cloth.castShadow = false;
+      const ringMat = new THREE.MeshStandardMaterial({
+        color: 0xff6a14,
+        emissive: 0xff6a14,
+        emissiveIntensity: 0.45,
+        roughness: 0.4,
+      });
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(5.2, 0.16, 6, 20), ringMat);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = 0.22;
+      group.add(pole, cloth, ring);
+      group.position.set(turf.flag.x, 0, turf.flag.z);
+      this.scene.add(group);
+      return { turf, group, clothMat, ringMat };
+    });
+    this.refreshFlags();
+  }
+
+  refreshFlags() {
+    if (!this.flags) return;
+    for (const flag of this.flags) {
+      const gang = gangOf(this.ownsTurf(flag.turf.id) ? 'flame' : flag.turf.gang);
+      flag.clothMat.color.setHex(gang.hex);
+      flag.clothMat.emissive.setHex(gang.hex);
+      flag.ringMat.color.setHex(gang.hex);
+      flag.ringMat.emissive.setHex(gang.hex);
+    }
+  }
+
+  ensureGang() {
+    if (this.gang) return;
+    this.gang = [];
+    for (let i = 0; i < 6; i += 1) {
+      const npc = this.makeNpc('male');
+      npc.team = 'gang';
+      npc.armed = true;
+      npc.alive = false;
+      npc.active = false;
+      npc.actor.model.visible = false;
+      npc.vestMat = dressGang(npc.actor, GANGS.short.hex);
+      this.npcs.push(npc);
+      this.gang.push(npc);
+    }
+  }
+
+  placeGang(npc, x, z, hex, turf) {
+    if (this.world.blocked(x, z, 0.4, 'walk') || inWater(x, z)) {
+      x = turf.flag.x + (this.rng() - 0.5) * 5;
+      z = turf.flag.z + 3.2;
+    }
+    npc.x = x;
+    npc.z = z;
+    npc.hp = 52;
+    npc.alive = true;
+    npc.active = true;
+    npc.team = 'gang';
+    npc.armed = true;
+    npc.state = 'fight';
+    npc.down = 0;
+    npc.animLock = 0;
+    npc.shootCd = 0.8;
+    npc.yaw = Math.atan2(turf.flag.x - x, turf.flag.z - z);
+    npc.actor.model.visible = true;
+    npc.vestMat?.color.setHex(hex);
+    npc.vestMat?.emissive.setHex(hex);
+    npc.actor.play('Idle', { fade: 0.05 });
+  }
+
+  clearGang() {
+    for (const npc of this.gang || []) {
+      npc.alive = false;
+      npc.active = false;
+      npc.hp = 0;
+      npc.actor.model.visible = false;
+    }
+  }
+
+  abortTurf(reason) {
+    const busy = this.war || this.raid || (this.gang || []).some((npc) => npc.alive);
+    this.war = null;
+    this.raid = null;
+    if (busy) this.clearGang();
+    if (busy) this.objectiveSig = '';
+    if (reason) this.ui.toast(reason);
+  }
+
+  tryTurf() {
+    const here = this.focus();
+    const turf = flagHere(here.x, here.z);
+    if (!turf) return false;
+    if (this.war || this.raid) {
+      this.ui.toast('这场地盘战还没结束');
+      return true;
+    }
+    if (this.ownsTurf(turf.id)) {
+      this.ui.toast(`${turf.name}挂着橙焰帮的旗。地盘每分钟约 $${incomePerMin(this.turf.owned)}`);
+      return true;
+    }
+    this.beginWar(turf.id);
+    return true;
+  }
+
+  beginWar(id) {
+    if (this.war || this.raid) {
+      this.ui.toast('先把这场打完');
+      return;
+    }
+    if (this.mission) {
+      this.ui.toast('先把当前任务做完，再来抢地盘');
+      return;
+    }
+    if (this.race) {
+      this.ui.toast('这场车还没跑完');
+      return;
+    }
+    if (this.guideStep < GUIDE.length) {
+      this.ui.toast('先把教程走完');
+      return;
+    }
+    const turf = turfById(id);
+    if (!turf || turf.home) return;
+    if (this.ownsTurf(turf.id)) {
+      this.ui.toast('这已经是你的地盘');
+      return;
+    }
+    if (this.vehicle) {
+      this.ui.toast('下车再宣战');
+      return;
+    }
+    this.spawnWave(turf);
+    this.war = { id: turf.id, leash: 0 };
+    this.invuln = Math.max(this.invuln, 1.1);
+    this.objectiveSig = '';
+    this.audio.resume();
+    this.ui.toast(`向${gangOf(turf.gang).name}宣战。清掉他们，${turf.name}就归橙焰帮`);
+  }
+
+  spawnWave(turf) {
+    this.ensureGang();
+    const count = waveSize(this.quality === 'low');
+    const points = wavePoints(turf, count);
+    const hex = gangOf(turf.gang).hex;
+    this.gang.forEach((npc, index) => {
+      if (index >= count) {
+        npc.alive = false;
+        npc.active = false;
+        npc.actor.model.visible = false;
+        return;
+      }
+      this.placeGang(npc, points[index].x, points[index].z, hex, turf);
+    });
+  }
+
+  finishCapture(turf) {
+    this.turf.owned.add(turf.id);
+    this.turf.taken += 1;
+    this.war = null;
+    this.clearGang();
+    this.refreshFlags();
+    this.usd += turf.prize;
+    this.rep += 28;
+    this.walletSig = '';
+    this.objectiveSig = '';
+    this.raidClock = 75;
+    this.audio.success();
+    this.ui.toast(`${turf.name}插上橙焰旗，+${fmtUsd(turf.prize)}，每分钟约 $${incomePerMin(this.turf.owned)}`);
+    this.noteTrack('turf', 1, { turfHeld: this.heldCount() });
+  }
+
+  beginRaid(force = false) {
+    if (this.war || this.raid || this.mission || this.race || this.guideStep < GUIDE.length) {
+      this.raidClock = 40;
+      return;
+    }
+    const pool = TURFS.filter((turf) => !turf.home && this.ownsTurf(turf.id));
+    if (!pool.length) {
+      this.raidClock = force ? 25 : 80;
+      return;
+    }
+    const turf = pool[Math.floor(this.rng() * pool.length)];
+    this.spawnWave(turf);
+    this.raid = { id: turf.id, left: 90 };
+    this.objectiveSig = '';
+    this.ui.toast(`${gangOf(turf.gang).name}打回来了。守住${turf.name}`);
+    this.audio.resume();
+  }
+
+  endRaid(won) {
+    const turf = this.raid ? turfById(this.raid.id) : null;
+    this.raid = null;
+    this.clearGang();
+    this.objectiveSig = '';
+    this.raidClock = 120;
+    if (!turf) return;
+    if (won) {
+      this.turf.defended += 1;
+      this.usd += 700;
+      this.rep += 16;
+      this.walletSig = '';
+      this.audio.success();
+      this.ui.toast(`守住了${turf.name}，+$700`);
+      this.noteTrack('defend', 1, { turfHeld: this.heldCount() });
+      return;
+    }
+    this.turf.owned.delete(turf.id);
+    this.refreshFlags();
+    this.audio.fail();
+    this.ui.toast(`${gangOf(turf.gang).name}夺回了${turf.name}`);
+    this.noteTrack(null, 0, { turfHeld: this.heldCount() });
+  }
+
+  updateTurf(dt) {
+    if (!this.turf) return;
+    for (const flag of this.flags || []) {
+      flag.group.rotation.y = Math.sin(this.time * 0.8 + flag.turf.x) * 0.18;
+    }
+    this.tickTurfIncome(dt);
+    if (this.war) {
+      this.tickWar(dt);
+      return;
+    }
+    if (this.raid) {
+      this.tickRaid(dt);
+      return;
+    }
+    if (this.mission || this.race || this.guideStep < GUIDE.length || this.player.hp <= 0) return;
+    this.raidClock -= dt;
+    if (this.raidClock <= 0) this.beginRaid(false);
+  }
+
+  tickTurfIncome(dt) {
+    if (this.guideStep < GUIDE.length) return;
+    this.turfPay += dt;
+    if (this.turfPay < 40) return;
+    const minutes = this.turfPay / 60;
+    this.turfPay = 0;
+    const pay = Math.round(incomePerMin(this.turf.owned) * minutes);
+    if (pay <= 0) return;
+    this.usd += pay;
+    this.walletSig = '';
+    this.ui.toast(`地盘抽成 +${fmtUsd(pay)}`);
+    this.save();
+  }
+
+  tickWar(dt) {
+    const turf = turfById(this.war.id);
+    if (!turf) {
+      this.abortTurf('');
+      return;
+    }
+    if (this.player.hp <= 0) return;
+    if (this.gangAlive() <= 0) {
+      this.war.hold = (this.war.hold || 0) + dt;
+      if (this.war.hold > 0.65) this.finishCapture(turf);
+      return;
+    }
+    const here = this.focus();
+    if (outsideTurf(turf, here.x, here.z) > 18) this.war.leash += dt;
+    else this.war.leash = 0;
+    if (this.war?.leash > 7) {
+      this.abortTurf('跑出地盘，这场黄了');
+      return;
+    }
+    this.showMarker(turf.flag, `地盘战 · ${turf.name} · 还剩 ${this.gangAlive()} 人 · ${gangOf(turf.gang).name}`);
+  }
+
+  tickRaid(dt) {
+    const turf = turfById(this.raid.id);
+    if (!turf) {
+      this.abortTurf('');
+      return;
+    }
+    if (this.player.hp <= 0) return;
+    this.raid.left -= dt;
+    if (this.gangAlive() <= 0) {
+      this.raid.hold = (this.raid.hold || 0) + dt;
+      if (this.raid.hold > 0.65) this.endRaid(true);
+      return;
+    }
+    if (this.raid.left <= 0) {
+      this.endRaid(false);
+      return;
+    }
+    const remain = Math.max(1, Math.ceil(this.raid.left));
+    this.showMarker(turf.flag, `反攻 · ${turf.name} · 还剩 ${this.gangAlive()} 人 · ${remain}s`);
   }
 
   level() {
@@ -2502,11 +2887,12 @@ export class Game {
     this.noteTrack('talk', 1);
   }
 
-  noteTrack(track, amount = 0) {
+  noteTrack(track, amount = 0, extra = {}) {
     this.ensureQuests();
     const result = grantProgress(this.progress, track, amount, {
       level: this.level(),
       chapters: this.storyChapter,
+      turfHeld: extra.turfHeld,
     });
     if (!result.changed) return;
     if (result.usd) {
@@ -2550,6 +2936,23 @@ export class Game {
       items,
       achievements,
       unlocked: achievements.filter((item) => item.done).length,
+      turfLine: `橙焰帮 · 占 ${this.heldCount()}/${TURFS.length} · 每分钟约 $${incomePerMin(this.turf.owned)}`,
+      turfs: TURFS.map((turf) => {
+        const owned = this.ownsTurf(turf.id);
+        const gang = gangOf(owned ? 'flame' : turf.gang);
+        return {
+          name: turf.name,
+          desc: owned ? `${gang.name} · 每分钟 $${turf.income}` : `${gang.name}占据 · 奖 ${fmtUsd(turf.prize)}`,
+          meta: owned ? '已占领' : '敌对',
+          done: owned,
+          color: gang.color,
+          x: turf.x,
+          z: turf.z,
+          hw: turf.hw,
+          hd: turf.hd,
+        };
+      }),
+      player: { x: this.focus().x, z: this.focus().z },
     };
   }
 
@@ -2607,6 +3010,10 @@ export class Game {
   beginRace(trackId) {
     if (this.race) {
       this.ui.toast('这场还没完');
+      return;
+    }
+    if (this.war || this.raid) {
+      this.ui.toast('先把地盘战打完');
       return;
     }
     const track = trackById(trackId);
@@ -2832,6 +3239,7 @@ export class Game {
       mesh.visible = false;
     });
     this.ui.setRace('');
+    if (this.war || this.raid) return;
     if (this.mission) return;
     if (this.guideStep < GUIDE.length) {
       const step = GUIDE[this.guideStep];
@@ -2851,6 +3259,10 @@ export class Game {
       const step = GUIDE[this.guideStep];
       this.showMarker(step, step.text);
       return;
+    }
+    if (!this.turfTold) {
+      this.turfTold = true;
+      this.ui.toast('小地图色块是地盘。走到敌对旗帜按 E 宣战');
     }
     if (this.storyChapter < CHAPTERS.length) {
       const chapter = CHAPTERS[this.storyChapter];
@@ -3048,6 +3460,19 @@ export class Game {
     const toY = (z) => h / 2 + (z - focus.z) * scale;
     ctx.fillStyle = '#1c6e86';
     ctx.fillRect(toX(-600), toY(348), 1200 * scale, 200 * scale);
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    for (const turf of TURFS) {
+      const gang = gangOf(this.ownsTurf(turf.id) ? 'flame' : turf.gang);
+      ctx.fillStyle = gang.color;
+      ctx.fillRect(
+        toX(turf.x - turf.hw),
+        toY(turf.z - turf.hd),
+        turf.hw * 2 * scale,
+        turf.hd * 2 * scale,
+      );
+    }
+    ctx.restore();
     ctx.strokeStyle = 'rgba(230,230,230,0.35)';
     ctx.lineWidth = 2;
     for (const seg of this.world?.roads || []) {
@@ -3074,6 +3499,12 @@ export class Game {
       ctx.beginPath();
       ctx.arc(toX(job.x), toY(job.z), 5, 0, Math.PI * 2);
       ctx.fill();
+    }
+    for (const turf of TURFS) {
+      if (turf.home) continue;
+      const active = this.war?.id === turf.id || this.raid?.id === turf.id;
+      ctx.fillStyle = active ? '#fff6ea' : '#1a1020';
+      ctx.fillRect(toX(turf.flag.x) - 2, toY(turf.flag.z) - 2, 4, 4);
     }
     if (this.race?.track) {
       ctx.fillStyle = '#ffe14a';
@@ -3142,12 +3573,20 @@ export class Game {
     this.finishedJobs = new Set();
     this.race = null;
     this.raceBest = {};
+    this.turf = readTurf(null);
+    this.war = null;
+    this.raid = null;
+    this.raidClock = 110;
+    this.turfPay = 0;
+    this.abortTurf('');
+    this.refreshFlags();
     this.ui.setRace('');
     this.taxi = null;
     this.goalHint = null;
     this.storyChapter = 0;
     this.daily = dailyFor(new Date().toISOString().slice(0, 10));
     this.progress = restoreProgress(null);
+    this.progress.stats.turfHeld = this.turf.owned.size;
     this.driveBuf = 0;
     this.player.hp = 100;
     this.player.armor = 25;

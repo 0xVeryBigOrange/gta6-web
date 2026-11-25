@@ -147,6 +147,7 @@ export const HEADLINES = [
   '链上越野缺货，车行只收游戏里的钱',
   '谣言：橙氏基金的流动性在后备箱里',
   '气象：霓虹日落会转夜，适合跑路',
+  '街头：空头帮和矿工帮又在换旗',
 ];
 
 export const SAVE_KEY = 'vice-chain-3d-save-v2';

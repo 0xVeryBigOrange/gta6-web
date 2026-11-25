@@ -10,6 +10,8 @@ export const QUEST_POOL = [
   { id: 'trade', name: '在交易所成交一次', need: 1, reward: 600, track: 'trade' },
   { id: 'job', name: '做完一件路边差事', need: 1, reward: 550, track: 'job' },
   { id: 'clear', name: '甩掉一次通缉', need: 1, reward: 800, track: 'clear' },
+  { id: 'turf', name: '打下一块地盘', need: 1, reward: 1000, track: 'turf' },
+  { id: 'defend', name: '守住一次地盘反攻', need: 1, reward: 900, track: 'defend' },
 ];
 
 export const ACHIEVEMENTS = [
@@ -28,6 +30,9 @@ export const ACHIEVEMENTS = [
   { id: 'finale', name: '九章之后', desc: '完成全部九章主线', stat: 'chapters', need: 9, reward: 2000 },
   { id: 'streak', name: '今日三单', desc: '同一天做完 3 个每日任务', stat: 'fullDays', need: 1, reward: 600 },
   { id: 'rep', name: '声望起来了', desc: '升到 5 级', stat: 'level', need: 5, reward: 900 },
+  { id: 'flag', name: '插上旗', desc: '从别的帮派手里打下一块地盘', stat: 'turfs', need: 1, reward: 700 },
+  { id: 'block', name: '三条街', desc: '同时占住 3 块地盘', stat: 'turfHeld', need: 3, reward: 1200 },
+  { id: 'hold', name: '守住了', desc: '打退一次地盘反攻', stat: 'defends', need: 1, reward: 800 },
 ];
 
 const TRACK_STAT = {
@@ -43,6 +48,8 @@ const TRACK_STAT = {
   clear: 'clears',
   taxi: 'taxis',
   vault: 'vaults',
+  turf: 'turfs',
+  defend: 'defends',
 };
 
 const FULL_DAY_BONUS = 800;
@@ -63,6 +70,9 @@ export function emptyStats() {
     vaults: 0,
     chapters: 0,
     fullDays: 0,
+    turfs: 0,
+    defends: 0,
+    turfHeld: 0,
   };
 }
 
@@ -140,6 +150,13 @@ export function grantProgress(progress, track, amount = 0, ctx = {}) {
     const next = Math.max(progress.stats.chapters || 0, ctx.chapters || 0);
     if (next !== progress.stats.chapters) {
       progress.stats.chapters = next;
+      changed = true;
+    }
+  }
+  if (ctx.turfHeld != null) {
+    const next = Math.max(0, Math.round(Number(ctx.turfHeld) || 0));
+    if (next !== progress.stats.turfHeld) {
+      progress.stats.turfHeld = next;
       changed = true;
     }
   }
