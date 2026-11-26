@@ -360,6 +360,25 @@ export function makeNameTag(text, color = '#ffd7a8') {
   return sprite;
 }
 
+export function makeWaveMark() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.font = '92px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('👋', 64, 72);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
+  sprite.scale.set(0.48, 0.48, 1);
+  sprite.position.set(0.35, 2.95, 0);
+  sprite.visible = false;
+  sprite.renderOrder = 13;
+  return sprite;
+}
+
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);

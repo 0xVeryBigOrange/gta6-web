@@ -91,7 +91,7 @@ export function buildWorld(scene, assets, quality = 'high') {
   scene.add(root);
   const detail = quality === 'high' ? 380 : 140;
   const lite = quality !== 'high';
-  initFacades(assets.surfaces?.plaster?.image || null, quality === 'high' ? 8 : 4);
+  initFacades(assets.surfaces?.plaster?.image || null, quality === 'high' ? 8 : 4, quality);
 
   const chunkOf = (x, z) => {
     const cx = Math.floor(x / 140);
@@ -151,7 +151,7 @@ export function buildWorld(scene, assets, quality = 'high') {
     root.add(mesh);
   };
   district(0, 0, 420, 420, surf.concrete, 0x9aa0a6, 8);
-  district(380, 300, 560, 180, surf.sand, 0xe6d2a8, 7);
+  district(380, 300, 560, 180, surf.sand, 0xfff6ea, 7);
   district(-400, -400, 400, 260, surf.concrete, 0x8e939a, 10);
   district(390, 0, 320, 340, surf.grass, 0x67a85a, 8);
 
@@ -305,13 +305,15 @@ export function buildWorld(scene, assets, quality = 'high') {
         vec3 viewDir = normalize(cameraPosition - vPos);
         float fres = pow(1.0 - max(dot(viewDir, n), 0.0), 3.0);
         float wave = sin(vPos.x * 0.09 + uTime) * sin(vPos.z * 0.07 - uTime * 0.8);
-        vec3 deep = mix(vec3(0.02, 0.16, 0.28), vec3(0.01, 0.04, 0.1), uNight);
-        vec3 shallow = mix(vec3(0.25, 0.72, 0.74), vec3(0.05, 0.16, 0.24), uNight);
-        vec3 col = mix(deep, shallow, wave * 0.5 + 0.45);
+        vec3 deep = mix(vec3(0.02, 0.18, 0.32), vec3(0.01, 0.05, 0.12), uNight);
+        vec3 shallow = mix(vec3(0.12, 0.74, 0.70), vec3(0.04, 0.16, 0.26), uNight);
+        vec3 col = mix(deep, shallow, wave * 0.5 + 0.5);
         vec3 sunDir = normalize(uSun);
         float spec = pow(max(dot(reflect(-sunDir, n), viewDir), 0.0), 90.0);
-        col += vec3(1.0, 0.9, 0.7) * spec * (0.7 - uNight * 0.55);
-        col = mix(col, uHorizon, fres * 0.55);
+        col += vec3(1.0, 0.95, 0.85) * spec * (0.55 - uNight * 0.4);
+        float foam = smoothstep(0.62, 0.95, wave);
+        col += vec3(0.85, 0.96, 0.95) * foam * 0.16 * (1.0 - uNight);
+        col = mix(col, uHorizon, fres * 0.2);
         gl_FragColor = vec4(col, 0.9);
       }
     `,

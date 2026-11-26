@@ -21,20 +21,51 @@ const CLIP_ALIAS = {
   Punch_Right: 'Punch',
 };
 
-function paintMaterial(mat, outfit, meshName = '') {
+function addTriplanarUv(geometry) {
+  if (!geometry || geometry.getAttribute('uv')) return;
+  const pos = geometry.getAttribute('position');
+  const normal = geometry.getAttribute('normal');
+  if (!pos) return;
+  const uv = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i += 1) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const nx = normal ? Math.abs(normal.getX(i)) : 0;
+    const ny = normal ? Math.abs(normal.getY(i)) : 1;
+    const nz = normal ? Math.abs(normal.getZ(i)) : 0;
+    let u = x;
+    let v = y;
+    if (nx >= ny && nx >= nz) {
+      u = z;
+      v = y;
+    } else if (nz >= ny) {
+      u = x;
+      v = y;
+    } else {
+      u = x;
+      v = z;
+    }
+    uv[i * 2] = u * 3.1;
+    uv[i * 2 + 1] = v * 3.1;
+  }
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+}
+
+function paintMaterial(mat, outfit, meshName = '', maps = {}) {
   const next = mat.clone();
   const name = next.name || '';
   const mesh = meshName || '';
   if (/skin_darker/i.test(name)) {
     next.color.setHex(outfit.skin);
     next.color.multiplyScalar(0.72);
-    next.roughness = 0.52;
+    next.roughness = 0.58;
     next.metalness = 0;
   } else if (/skin|face/i.test(name)) {
     next.color.setHex(outfit.skin);
-    if (/face/i.test(name)) next.color.offsetHSL(0, 0.02, 0.04);
-    next.roughness = 0.5;
-    next.metalness = 0.02;
+    if (/face/i.test(name)) next.color.offsetHSL(0, 0.03, 0.05);
+    next.roughness = 0.58;
+    next.metalness = 0;
   } else if (/^eye$/i.test(name) || name === 'Eye') {
     next.color.setHex(0x16324a);
     next.emissive?.setHex(0x16324a);
@@ -42,28 +73,31 @@ function paintMaterial(mat, outfit, meshName = '') {
     next.roughness = 0.18;
   } else if (/hair|eyebrow|moustache/i.test(name)) {
     next.color.setHex(outfit.hair);
-    next.roughness = 0.55;
-    next.metalness = 0;
+    next.roughness = 0.4;
+    next.metalness = 0.06;
   } else if (/belt|shoe|feet/i.test(name) || /feet|shoe/i.test(mesh)) {
     next.color.setHex(0x1a1a1a);
-    next.roughness = 0.5;
-    next.metalness = 0.15;
+    next.roughness = 0.48;
+    next.metalness = 0.18;
   } else if (/pant/i.test(name) || /leg/i.test(mesh)) {
     next.color.setHex(outfit.pants ?? 0x1e2433);
-    next.roughness = 0.74;
+    next.map = maps.denim || null;
+    next.roughness = 0.84;
     next.metalness = 0.02;
   } else if (/shirt|vest|jacket/i.test(name)) {
     next.color.setHex(outfit.cloth);
+    next.map = maps.cloth || null;
     if (/vest/i.test(name)) next.color.multiplyScalar(0.82);
-    next.roughness = 0.66;
-    next.metalness = 0.04;
+    next.roughness = 0.74;
+    next.metalness = 0.02;
   } else if (/black/i.test(name)) {
     next.color.setHex(outfit.cloth);
     next.color.multiplyScalar(0.45);
-    next.roughness = 0.55;
-    next.metalness = 0.08;
+    next.map = maps.cloth || null;
+    next.roughness = 0.62;
+    next.metalness = 0.04;
   }
-  if ('envMapIntensity' in next) next.envMapIntensity = 0.55;
+  if ('envMapIntensity' in next) next.envMapIntensity = next.map ? 0.28 : 0.4;
   return next;
 }
 
@@ -91,18 +125,19 @@ function aliasClips(clips) {
   return out;
 }
 
-function paintRoot(root, shirt) {
+function paintRoot(root, shirt, maps = {}) {
   root.traverse((obj) => {
     if (!obj.isMesh) return;
     obj.castShadow = true;
     obj.receiveShadow = true;
     obj.frustumCulled = true;
-    if (Array.isArray(obj.material)) obj.material = obj.material.map((m) => paintMaterial(m, shirt, obj.name));
-    else if (obj.material) obj.material = paintMaterial(obj.material, shirt, obj.name);
+    addTriplanarUv(obj.geometry);
+    if (Array.isArray(obj.material)) obj.material = obj.material.map((m) => paintMaterial(m, shirt, obj.name, maps));
+    else if (obj.material) obj.material = paintMaterial(obj.material, shirt, obj.name, maps);
   });
 }
 
-function tuneStatic(root) {
+function tuneStatic(root, veg = false) {
   root.traverse((obj) => {
     if (!obj.isMesh) return;
     obj.castShadow = true;
@@ -112,9 +147,15 @@ function tuneStatic(root) {
     for (const mat of mats) {
       if (!mat) continue;
       if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
-      mat.roughness = Math.min(mat.roughness ?? 0.6, 0.55);
-      mat.metalness = Math.max(mat.metalness ?? 0, 0.12);
-      if ('envMapIntensity' in mat) mat.envMapIntensity = 1.05;
+      if (veg) {
+        mat.roughness = 0.92;
+        mat.metalness = 0;
+        if ('envMapIntensity' in mat) mat.envMapIntensity = 0.22;
+      } else {
+        mat.roughness = Math.min(mat.roughness ?? 0.6, 0.62);
+        mat.metalness = Math.max(mat.metalness ?? 0, 0.06);
+        if ('envMapIntensity' in mat) mat.envMapIntensity = 0.85;
+      }
       mat.needsUpdate = true;
     }
   });
@@ -161,7 +202,7 @@ export async function loadExtraPeople(assets) {
     if (assets.people[name]) return;
     const gltf = await loadGltf(loader, `${BASE}models/people/${name}.glb`);
     const template = SkeletonUtils.clone(gltf.scene);
-    paintRoot(template, OUTFITS[name]);
+    paintRoot(template, OUTFITS[name], assets.clothMaps || {});
     groundCenter(template, { axis: 'y', value: 1.84 });
     assets.people[name] = { template, clips: aliasClips(gltf.animations) };
   }));
@@ -193,11 +234,40 @@ export async function loadGameAssets(renderer, onProgress, quality = 'high') {
     onProgress?.(`模型 ${done}/${jobs.length}`);
   }));
 
+  const aniso = quality === 'low' ? 2 : Math.min(8, renderer.capabilities.getMaxAnisotropy?.() || 4);
+  const texLoader = new THREE.TextureLoader();
+  const loadSurface = async (url, colorSpace) => {
+    try {
+      const tex = await texLoader.loadAsync(url);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.colorSpace = colorSpace;
+      tex.anisotropy = aniso;
+      return tex;
+    } catch {
+      return null;
+    }
+  };
+  onProgress?.('地面');
+  const [asphalt, asphaltNor, sand, concrete, grass, plaster, cloth, denim] = await Promise.all([
+    loadSurface(`${BASE}textures/asphalt.jpg`, THREE.SRGBColorSpace),
+    loadSurface(`${BASE}textures/asphalt_nor.jpg`, THREE.NoColorSpace),
+    loadSurface(`${BASE}textures/sand.jpg`, THREE.SRGBColorSpace),
+    loadSurface(`${BASE}textures/concrete.jpg`, THREE.SRGBColorSpace),
+    loadSurface(`${BASE}textures/grass.jpg`, THREE.SRGBColorSpace),
+    loadSurface(`${BASE}textures/plaster.jpg`, THREE.SRGBColorSpace),
+    loadSurface(`${BASE}textures/cloth.jpg`, THREE.SRGBColorSpace),
+    loadSurface(`${BASE}textures/denim.jpg`, THREE.SRGBColorSpace),
+  ]);
+  if (cloth) cloth.repeat.set(1, 1);
+  if (denim) denim.repeat.set(1, 1);
+  const clothMaps = { cloth, denim };
+
   const people = {};
   for (const name of peopleFiles) {
     const gltf = loaded[`people:${name}`];
     const template = SkeletonUtils.clone(gltf.scene);
-    paintRoot(template, OUTFITS[name]);
+    paintRoot(template, OUTFITS[name], clothMaps);
     groundCenter(template, { axis: 'y', value: 1.84 });
     people[name] = { template, clips: aliasClips(gltf.animations) };
   }
@@ -216,10 +286,10 @@ export async function loadGameAssets(renderer, onProgress, quality = 'high') {
   groundCenter(boat, { axis: 'z', value: 6.2 });
 
   const palm = loaded.palm.scene.clone(true);
-  tuneStatic(palm);
+  tuneStatic(palm, true);
   groundCenter(palm, { axis: 'y', value: 12 });
   const palmTall = loaded.palmTall.scene.clone(true);
-  tuneStatic(palmTall);
+  tuneStatic(palmTall, true);
   groundCenter(palmTall, { axis: 'y', value: 14 });
 
   const pistol = loaded.pistol.scene.clone(true);
@@ -238,30 +308,6 @@ export async function loadGameAssets(renderer, onProgress, quality = 'high') {
   const parasol = loaded.parasol.scene.clone(true);
   tuneStatic(parasol);
   groundCenter(parasol, { axis: 'y', value: 2.6 });
-
-  const aniso = quality === 'low' ? 2 : Math.min(8, renderer.capabilities.getMaxAnisotropy?.() || 4);
-  const texLoader = new THREE.TextureLoader();
-  const loadSurface = async (url, colorSpace) => {
-    try {
-      const tex = await texLoader.loadAsync(url);
-      tex.wrapS = THREE.RepeatWrapping;
-      tex.wrapT = THREE.RepeatWrapping;
-      tex.colorSpace = colorSpace;
-      tex.anisotropy = aniso;
-      return tex;
-    } catch {
-      return null;
-    }
-  };
-  onProgress?.('地面');
-  const [asphalt, asphaltNor, sand, concrete, grass, plaster] = await Promise.all([
-    loadSurface(`${BASE}textures/asphalt.jpg`, THREE.SRGBColorSpace),
-    loadSurface(`${BASE}textures/asphalt_nor.jpg`, THREE.NoColorSpace),
-    loadSurface(`${BASE}textures/sand.jpg`, THREE.SRGBColorSpace),
-    loadSurface(`${BASE}textures/concrete.jpg`, THREE.SRGBColorSpace),
-    loadSurface(`${BASE}textures/grass.jpg`, THREE.SRGBColorSpace),
-    loadSurface(`${BASE}textures/plaster.jpg`, THREE.SRGBColorSpace),
-  ]);
 
   let environment = null;
   try {
@@ -285,6 +331,7 @@ export async function loadGameAssets(renderer, onProgress, quality = 'high') {
     cars,
     boat,
     surfaces: { asphalt, asphaltNor, sand, concrete, grass, plaster },
+    clothMaps,
     palm,
     palmTall,
     pistol,

@@ -44,39 +44,47 @@ function canvasTex(canvas, anisotropy) {
   return tex;
 }
 
-function paintFacade(style, plaster, anisotropy) {
+function paintFacade(style, plaster, anisotropy, w = 256, h = 512) {
   const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 512;
+  canvas.width = w;
+  canvas.height = h;
   const ctx = canvas.getContext('2d');
+  const sx = w / 256;
+  const sy = h / 512;
   ctx.fillStyle = style.wall;
-  ctx.fillRect(0, 0, 256, 512);
+  ctx.fillRect(0, 0, w, h);
   if (plaster) {
-    ctx.globalAlpha = 0.28;
-    ctx.drawImage(plaster, 0, 0, 256, 512);
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(plaster, 0, 0, w, h);
     ctx.globalAlpha = 1;
   }
+  ctx.globalAlpha = 0.34;
+  ctx.fillStyle = style.trim;
+  ctx.fillRect(0, 0, 14 * sx, h);
+  ctx.fillRect(w - 14 * sx, 0, 14 * sx, h);
+  ctx.globalAlpha = 1;
   const emit = document.createElement('canvas');
-  emit.width = 256;
-  emit.height = 512;
+  emit.width = w;
+  emit.height = h;
   const eg = emit.getContext('2d');
   eg.fillStyle = '#000';
-  eg.fillRect(0, 0, 256, 512);
+  eg.fillRect(0, 0, w, h);
+  const neons = ['#ffb25a', '#ff4fad', '#ffe08a', '#3df0ff'];
   const floors = 8;
-  const fh = 512 / floors;
+  const fh = h / floors;
   for (let f = 0; f < floors; f += 1) {
     const y = f * fh;
     ctx.fillStyle = style.trim;
-    ctx.fillRect(0, y, 256, 5);
+    ctx.fillRect(0, y, w, 5 * sy);
     for (let k = 0; k < 4; k += 1) {
-      const x = 16 + k * 60;
-      const wy = y + 14;
-      const ww = 42;
-      const wh = fh - 26;
+      const x = (16 + k * 60) * sx;
+      const wy = y + 14 * sy;
+      const ww = 42 * sx;
+      const wh = fh - 26 * sy;
       ctx.fillStyle = style.glass;
       ctx.fillRect(x, wy, ww, wh);
-      ctx.fillStyle = 'rgba(255,255,255,0.16)';
-      ctx.fillRect(x + 3, wy + 3, 7, wh - 8);
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(x + 3 * sx, wy + 3 * sy, 7 * sx, wh - 8 * sy);
       ctx.strokeStyle = style.trim;
       ctx.lineWidth = 2;
       ctx.strokeRect(x, wy, ww, wh);
@@ -87,9 +95,8 @@ function paintFacade(style, plaster, anisotropy) {
       ctx.lineTo(x + ww, wy + wh * 0.42);
       ctx.stroke();
       if ((f * 5 + k * 3) % 4 !== 0) {
-        const lit = 150 + ((f * 17 + k * 29) % 80);
-        eg.fillStyle = `rgb(${lit}, ${Math.round(lit * 0.78)}, ${Math.round(lit * 0.45)})`;
-        eg.fillRect(x + 4, wy + 4, ww - 8, wh - 8);
+        eg.fillStyle = neons[(f + k) % neons.length];
+        eg.fillRect(x + 4 * sx, wy + 4 * sy, ww - 8 * sx, wh - 8 * sy);
       }
     }
   }
@@ -143,14 +150,16 @@ let styles = null;
 let roofTex = null;
 let anisotropy = 4;
 
-export function initFacades(plasterImage, aniso = 4) {
+export function initFacades(plasterImage, aniso = 4, quality = 'high') {
   anisotropy = aniso;
+  const w = quality === 'low' ? 256 : 320;
+  const h = w * 2;
   roofTex = paintRoof(aniso);
   styles = STYLES.map((style) => ({
     ...style,
     hex: style.wall,
     trimHex: style.trim,
-    wall: paintFacade(style, plasterImage, aniso),
+    wall: paintFacade(style, plasterImage, aniso, w, h),
     shop: paintShop(style, aniso),
     trim: new THREE.MeshStandardMaterial({
       color: style.trim,
@@ -177,7 +186,7 @@ function wallMaterial(style, w, h) {
   const mat = new THREE.MeshStandardMaterial({
     map,
     emissiveMap: emissive,
-    emissive: 0xffe2c0,
+    emissive: 0xffc2e4,
     roughness: 0.78,
     metalness: 0.02,
     envMapIntensity: 0.4,
@@ -221,11 +230,14 @@ function addSign(group, style, w, y, z, rng) {
   ctx.fillStyle = style.trimHex;
   ctx.fillRect(0, 0, 512, 8);
   ctx.fillRect(0, 152, 512, 8);
+  ctx.strokeStyle = '#ff4fd8';
+  ctx.lineWidth = 8;
+  ctx.strokeRect(14, 18, 484, 124);
   ctx.fillStyle = '#ffe7c2';
   ctx.font = '700 64px sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText(ad[0], 256, 78);
-  ctx.fillStyle = style.trimHex;
+  ctx.fillStyle = '#7ef6ff';
   ctx.font = '32px sans-serif';
   ctx.fillText(ad[1], 256, 124);
   const tex = canvasTex(canvas, anisotropy);
