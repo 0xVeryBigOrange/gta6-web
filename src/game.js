@@ -56,7 +56,7 @@ import {
   signUp,
   validNick,
 } from './cloud.js';
-import { CAST, CHAPTERS, addAccessory, castById, makeNameTag, tintActor } from './story.js';
+import { CAST, CHAPTERS, addAccessory, castById, makeNameTag, makeWaveMark, tintActor } from './story.js';
 
 const WEAPONS = {
   fist: { name: '拳头', dmg: 24, cd: 0.48, range: 2.3 },
@@ -348,8 +348,10 @@ export class Game {
           vec3 n = normalize(vPos);
           float h = smoothstep(-0.08, 0.55, n.y);
           vec3 col = mix(uHorizon, uTop, h);
-          float sun = pow(max(dot(n, normalize(uSun)), 0.0), 140.0);
-          col += vec3(1.0, 0.82, 0.55) * sun;
+          float sun = pow(max(dot(n, normalize(uSun)), 0.0), 180.0);
+          float halo = pow(max(dot(n, normalize(uSun)), 0.0), 8.0);
+          col += vec3(1.0, 0.88, 0.62) * sun;
+          col += vec3(1.0, 0.52, 0.28) * halo * 0.32;
           gl_FragColor = vec4(col, 1.0);
         }
       `,
@@ -513,6 +515,8 @@ export class Game {
 
   spawnCast() {
     this.actor = createActor(this.assets.people.male);
+    this.waveMark = makeWaveMark();
+    this.actor.model.add(this.waveMark);
     this.scene.add(this.actor.model);
     this.gun = this.assets.pistol.clone(true);
     this.gun.position.set(0.02, 0.04, 0.08);
@@ -795,6 +799,7 @@ export class Game {
       this.updateGps();
       this.updateCoins();
       this.updateRemotes(dt);
+      if (this.waveMark) this.waveMark.visible = this.time < (this.waveUntil || 0);
       this.poseTimer += dt;
       if (this.poseTimer > 0.12) {
         this.poseTimer = 0;
@@ -1767,8 +1772,13 @@ export class Game {
     this.sun.position.set(focus.x + Math.cos(az) * 80, 12 + Math.max(0.2, elev) * 90, focus.z + Math.sin(az) * 40);
     this.sun.target.position.set(focus.x, 0, focus.z);
     this.sun.shadow.camera.updateProjectionMatrix();
-    const horizon = new THREE.Color().setHSL(day > 0.18 ? 0.08 : 0.66, day > 0.18 ? 0.62 : 0.4, 0.05 + day * 0.58);
-    const top = new THREE.Color().setHSL(0.57, 0.72, 0.02 + day * 0.5);
+    const dusk = elev > 0.16 && elev < 0.4;
+    const horizon = new THREE.Color().setHSL(
+      dusk ? 0.05 : (day > 0.18 ? 0.08 : 0.68),
+      dusk ? 0.82 : (day > 0.18 ? 0.48 : 0.48),
+      dusk ? 0.5 : 0.04 + day * 0.5,
+    );
+    const top = new THREE.Color().setHSL(night > 0.7 ? 0.68 : 0.54, night > 0.7 ? 0.58 : 0.66, 0.025 + day * 0.46);
     this.sky.material.uniforms.uTop.value.copy(top);
     this.sky.material.uniforms.uHorizon.value.copy(horizon);
     this.sky.material.uniforms.uSun.value.set(Math.cos(az), Math.max(0.02, elev), Math.sin(az) * 0.55);
@@ -3857,6 +3867,7 @@ export class Game {
 
   sendEmote() {
     this.emote = 'wave';
+    this.waveUntil = this.time + 1.6;
     this.actor?.play('Wave', { once: true, fade: 0.08 });
     this.animLock = 1.1;
     this.sendPose(true);
@@ -3895,7 +3906,10 @@ export class Game {
       remote.yaw = remote.tyaw;
       remote.ready = true;
     }
-    if (pose.e === 'wave') remote.actor.play('Wave', { once: true, fade: 0.1 });
+    if (pose.e === 'wave') {
+      remote.actor.play('Wave', { once: true, fade: 0.1 });
+      remote.waveUntil = this.time + 1.6;
+    }
     if (remote.tag && remote.tag.userData.tagText !== remote.nick) {
       remote.tag.removeFromParent();
       remote.tag.material.map?.dispose();
@@ -3910,13 +3924,15 @@ export class Game {
     const actor = createActor(this.assets.people.male);
     tintActor(actor, { cloth: pose.color || '#8aa4ff', pants: '#1c2433', hair: '#1b120d' });
     const tag = makeNameTag(pose.nick || '玩家', pose.color || '#ffd7a8');
-    actor.model.add(tag);
+    const wave = makeWaveMark();
+    actor.model.add(tag, wave);
     this.scene.add(actor.model);
     actor.play('Idle');
     return {
       id: pose.id,
       actor,
       tag,
+      wave,
       car: null,
       shown: '',
       nick: pose.nick || '玩家',
@@ -3981,6 +3997,7 @@ export class Game {
         remote.actor.model.position.set(remote.x, remote.y, remote.z);
         remote.actor.model.rotation.y = remote.yaw;
         if (remote.tag) remote.tag.position.y = 2.62;
+        if (remote.wave) remote.wave.visible = this.time < (remote.waveUntil || 0);
       }
       locomotion(remote.actor, remote.car ? 0 : Math.min(6, speed * 8), 0);
       remote.actor.mixer.update(dt);
