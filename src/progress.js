@@ -12,6 +12,7 @@ export const QUEST_POOL = [
   { id: 'clear', name: '甩掉一次通缉', need: 1, reward: 800, track: 'clear' },
   { id: 'turf', name: '打下一块地盘', need: 1, reward: 1000, track: 'turf' },
   { id: 'defend', name: '守住一次地盘反攻', need: 1, reward: 900, track: 'defend' },
+  { id: 'drop', name: '抢走一次空投', need: 1, reward: 700, track: 'drop' },
 ];
 
 export const ACHIEVEMENTS = [
@@ -33,6 +34,9 @@ export const ACHIEVEMENTS = [
   { id: 'flag', name: '插上旗', desc: '从别的帮派手里打下一块地盘', stat: 'turfs', need: 1, reward: 700 },
   { id: 'block', name: '三条街', desc: '同时占住 3 块地盘', stat: 'turfHeld', need: 3, reward: 1200 },
   { id: 'hold', name: '守住了', desc: '打退一次地盘反攻', stat: 'defends', need: 1, reward: 800 },
+  { id: 'drop_bag', name: '先到先得', desc: '抢走一次空投', stat: 'airdrops', need: 1, reward: 600 },
+  { id: 'dip', name: '闪崩抄底', desc: '在闪崩时于交易所抄底', stat: 'crashes', need: 1, reward: 700 },
+  { id: 'shout', name: '喊单一声', desc: '参加一次街头拉盘', stat: 'pumps', need: 1, reward: 650 },
 ];
 
 const TRACK_STAT = {
@@ -50,6 +54,9 @@ const TRACK_STAT = {
   vault: 'vaults',
   turf: 'turfs',
   defend: 'defends',
+  drop: 'airdrops',
+  crash: 'crashes',
+  pump: 'pumps',
 };
 
 const FULL_DAY_BONUS = 800;
@@ -73,6 +80,9 @@ export function emptyStats() {
     turfs: 0,
     defends: 0,
     turfHeld: 0,
+    airdrops: 0,
+    crashes: 0,
+    pumps: 0,
   };
 }
 

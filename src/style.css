@@ -74,6 +74,7 @@ canvas { display: block; width: 100%; height: 100%; }
 @keyframes tick { to { transform: translateX(-100%); } }
 .up { color: #7dffa6; }
 .hot { color: var(--pink); font-weight: 700; }
+.crash { color: #ff5d7a; font-weight: 700; }
 
 #stars {
   position: absolute;
