@@ -24,10 +24,11 @@ import {
   inWater,
   missionName,
 } from './config.js';
-import { getOrngMult, getPriceSource, getPrices, refreshPrices, setOrngMult, tickSimulated } from './prices.js';
+import { clearShockMults, getOrngMult, getPriceSource, getPrices, refreshPrices, setOrngMult, setShockMult, tickSimulated } from './prices.js';
 import { loadSave, writeSave } from './save.js';
 import { angNorm, clamp, dist2, fmtNum, fmtUsd, mulberry32 } from './util.js';
 import { ACTIVITIES, GUIDE, dailyFor, levelFromRep, routeOnRoads } from './citylife.js';
+import { CRASH_COINS, DROP_SPOTS, PUMP_SPOTS, readShocks, rollShock } from './shocks.js';
 import { formatRaceTime, readRaceBests, stepRacer, trackById } from './racing.js';
 import {
   GANGS,
@@ -129,6 +130,10 @@ export class Game {
     this.race = null;
     this.raceBest = {};
     this.turf = readTurf(null);
+    this.shocks = readShocks(null);
+    this.shock = null;
+    this.shockClock = 22;
+    this.shockKind = '';
     this.war = null;
     this.raid = null;
     this.raidClock = 110;
@@ -235,6 +240,7 @@ export class Game {
       signIn: (email, password) => this.submitAuth({ mode: 'login', email, password }),
       setNick: (nickname) => this.submitAuth({ mode: 'nick', nickname }),
       startVault: () => this.debugStartVault(),
+      forceShock: (kind, x, z) => this.beginShock(kind || 'drop', x != null ? { x, z, name: '这里' } : null),
       grant: (track, amount = 1) => this.noteTrack(track, amount),
       progress: () => this.progress,
       startRace: (id) => this.beginRace(id),
@@ -658,6 +664,7 @@ export class Game {
       this.scene.add(mesh);
       return mesh;
     });
+    this.buildCrate();
     this.buildLife();
     const sparkGeo = new THREE.SphereGeometry(0.12, 6, 6);
     const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffc14a });
@@ -796,6 +803,7 @@ export class Game {
       this.updateMission(dt);
       this.updateLife(dt);
       this.updateTurf(dt);
+      this.updateShock(dt);
       this.updateGps();
       this.updateCoins();
       this.updateRemotes(dt);
@@ -1087,6 +1095,10 @@ export class Game {
   updateNpcs(dt) {
     const focus = this.focus();
     for (const npc of this.npcs) {
+      if (npc.shockRunner) {
+        this.stepShockRunner(npc, dt);
+        continue;
+      }
       if (npc.team === 'story') {
         const d = Math.hypot(npc.x - focus.x, npc.z - focus.z);
         npc.actor.model.visible = d < (this.quality === 'low' ? 120 : 170);
@@ -1858,6 +1870,8 @@ export class Game {
       const d = dist2(this.player.x, this.player.z, SPOTS.pump.x, SPOTS.pump.z);
       if (d < SPOTS.pump.r * SPOTS.pump.r) bits.push('按 E 启动拉盘');
     }
+    const shockPrompt = this.shockPrompt();
+    if (shockPrompt) bits.push(shockPrompt);
     return bits.join('  ·  ');
   }
 
@@ -1907,6 +1921,7 @@ export class Game {
     }
     if (this.tryStoryTalk()) return;
     if (this.storyInteract()) return;
+    if (this.tryShock()) return;
     if (this.tryActivity()) return;
     if (this.tryTurf()) return;
     if (!this.mission && this.guideStep < GUIDE.length && GUIDE[this.guideStep].until === 'interact') {
@@ -2240,7 +2255,8 @@ export class Game {
   }
 
   pushPrices() {
-    this.ui.setTicker(getPrices(), getPriceSource(), getOrngMult() >= 3);
+    const shock = this.shock ? { kind: this.shock.kind, coin: this.shock.coin, label: this.shock.ticker } : null;
+    this.ui.setTicker(getPrices(), getPriceSource(), getOrngMult() >= 3, shock);
     this.walletSig = '';
   }
 
@@ -2265,6 +2281,7 @@ export class Game {
       this.ui.setRace('');
       if (this.raceAiCar) this.raceAiCar.mesh.visible = false;
       this.abortTurf('');
+      this.endShock('quiet');
       this.leavePresence();
     }
   }
@@ -2324,6 +2341,8 @@ export class Game {
     this.daily = data.daily || null;
     this.raceBest = readRaceBests(data.raceBest);
     this.turf = readTurf(data.turf);
+    this.shocks = readShocks(data.shocks);
+    this.endShock('quiet');
     this.war = null;
     this.raid = null;
     this.raidClock = 110;
@@ -2372,6 +2391,11 @@ export class Game {
         owned: [...(this.turf?.owned || [])],
         taken: this.turf?.taken || 0,
         defended: this.turf?.defended || 0,
+      },
+      shocks: {
+        claimed: this.shocks?.claimed || 0,
+        crashes: this.shocks?.crashes || 0,
+        pumps: this.shocks?.pumps || 0,
       },
       quests: this.progress?.quests || null,
       achievements: this.progress?.achievements || [],
@@ -3004,6 +3028,287 @@ export class Game {
     if (this.mode !== 'play') this.setMode('play');
   }
 
+  buildCrate() {
+    const group = new THREE.Group();
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(0.95, 0.72, 0.95),
+      new THREE.MeshStandardMaterial({ color: 0xff8a1e, emissive: 0xff4a1a, emissiveIntensity: 0.55, roughness: 0.42, metalness: 0.08 }),
+    );
+    box.position.y = 0.46;
+    box.castShadow = true;
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(0.98, 0.16, 0.98),
+      new THREE.MeshStandardMaterial({ color: 0xfff6ea, emissive: 0xffe7c2, emissiveIntensity: 0.2, roughness: 0.5 }),
+    );
+    stripe.position.y = 0.62;
+    const chute = new THREE.Mesh(
+      new THREE.ConeGeometry(1.15, 0.62, 8),
+      new THREE.MeshStandardMaterial({ color: 0xf4f7fb, emissive: 0xcfe8ff, emissiveIntensity: 0.25, roughness: 0.6, side: THREE.DoubleSide }),
+    );
+    chute.position.y = 1.55;
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(1.35, 0.05, 6, 18),
+      new THREE.MeshStandardMaterial({ color: 0x3df0ff, emissive: 0x3df0ff, emissiveIntensity: 0.9, roughness: 0.3 }),
+    );
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.08;
+    group.add(box, stripe, chute, ring);
+    group.visible = false;
+    this.scene.add(group);
+    this.crate = group;
+  }
+
+  updateShock(dt) {
+    if (this.shock) {
+      this.shock.life -= dt;
+      this.animateShock();
+      if (this.shock?.kind === 'drop') this.tryClaimDrop(false);
+      if (this.shock && this.shock.life <= 0) this.endShock('expire');
+      else if (this.shock) this.presentShock();
+      return;
+    }
+    if (this.guideStep < GUIDE.length || this.mission || this.race || this.war || this.raid) return;
+    this.shockClock -= dt;
+    if (this.shockClock > 0) return;
+    this.shockClock = 78 + this.rng() * 40;
+    this.beginShock(rollShock(this.rng, this.shockKind));
+  }
+
+  beginShock(kind, at) {
+    this.endShock('quiet');
+    const next = kind === 'crash' || kind === 'pump' || kind === 'drop' ? kind : 'drop';
+    this.shockKind = next;
+    if (next === 'crash') {
+      const coin = CRASH_COINS[Math.floor(this.rng() * CRASH_COINS.length)];
+      this.shock = {
+        kind: 'crash',
+        coin,
+        x: SPOTS.exchange.x,
+        z: SPOTS.exchange.z,
+        name: '交易所',
+        life: 34,
+        dur: 34,
+        ticker: `${coin} 闪崩`,
+        label: `${coin} 闪崩 · 去交易所按 E 抄底`,
+      };
+      setShockMult(coin, 0.42);
+      this.ui.toast(`${coin} 闪崩，价格几乎腰斩。去交易所抄底`);
+    } else if (next === 'pump') {
+      const spot = at || PUMP_SPOTS[Math.floor(this.rng() * PUMP_SPOTS.length)];
+      this.shock = {
+        kind: 'pump',
+        coin: 'ORNG',
+        x: spot.x,
+        z: spot.z,
+        name: spot.name || '街头',
+        life: 32,
+        dur: 32,
+        ticker: 'ORNG 拉盘',
+        label: `拉盘 · ${spot.name || '街头'} · 按 E 喊单`,
+      };
+      setShockMult('ORNG', 1.9);
+      this.ui.toast(`有人在${this.shock.name}喊单，大橙子币被抬起来了`);
+    } else {
+      const spot = at || DROP_SPOTS[Math.floor(this.rng() * DROP_SPOTS.length)];
+      this.shock = {
+        kind: 'drop',
+        coin: 'ORNG',
+        x: spot.x,
+        z: spot.z,
+        name: spot.name || '街上',
+        life: 40,
+        dur: 40,
+        ticker: '空投',
+        label: `空投 · ${spot.name || '街上'} · 先到先得`,
+      };
+      this.spawnDropRunner(spot);
+      this.ui.toast(`空投落在${this.shock.name}。有人正往那边跑`);
+    }
+    if (this.crate) {
+      this.crate.visible = this.shock.kind === 'drop';
+      this.crate.position.set(this.shock.x, 0, this.shock.z);
+    }
+    this.pushPrices();
+    this.audio.resume();
+  }
+
+  animateShock() {
+    const shock = this.shock;
+    if (!shock) return;
+    const t = 1 - Math.max(0, shock.life) / shock.dur;
+    if (shock.kind === 'crash') setShockMult(shock.coin, 0.42 + t * 0.58);
+    if (shock.kind === 'pump') setShockMult('ORNG', shock.done ? 2.5 : 1.15 + (1 - t) * 0.95);
+    if (this.crate?.visible) {
+      this.crate.position.y = Math.sin(this.time * 3) * 0.08;
+      const ring = this.crate.children[3];
+      if (ring) ring.rotation.z = this.time * 1.4;
+    }
+    const tick = Math.floor(shock.life * 3);
+    if (tick !== shock.priceTick) {
+      shock.priceTick = tick;
+      this.pushPrices();
+    }
+  }
+
+  presentShock() {
+    if (!this.shock) return;
+    this.showMarker(this.shock, this.shock.label);
+  }
+
+  shockPrompt() {
+    if (!this.shock) return '';
+    const here = this.focus();
+    const d = dist2(here.x, here.z, this.shock.x, this.shock.z);
+    if (this.shock.kind === 'crash' && d < 64) return '按 E 花 $500 抄底';
+    if (this.shock.kind === 'pump' && d < 49) return '按 E 喊单。监管会记一星';
+    if (this.shock.kind === 'drop' && d < 12) return '走近就能抢走空投';
+    return '';
+  }
+
+  tryShock() {
+    if (!this.shock) return false;
+    const here = this.focus();
+    const d = dist2(here.x, here.z, this.shock.x, this.shock.z);
+    if (this.shock.kind === 'crash') {
+      if (d > 64) return false;
+      this.buyDip();
+      return true;
+    }
+    if (this.shock.kind === 'pump') {
+      if (this.shock.done || d > 49) return false;
+      this.shoutPump();
+      return true;
+    }
+    if (this.shock.kind === 'drop' && d <= 12) {
+      this.tryClaimDrop(true);
+      return true;
+    }
+    return false;
+  }
+
+  buyDip() {
+    const shock = this.shock;
+    const cost = 500;
+    if (this.usd < cost) {
+      this.ui.toast('现金不够，抄底要 $500');
+      this.audio.fail();
+      return;
+    }
+    const price = Math.max(0.01, getPrices()[shock.coin]);
+    this.usd -= cost;
+    this.bal[shock.coin] += (cost * 1.85) / price;
+    this.shocks.crashes += 1;
+    this.walletSig = '';
+    this.audio.success();
+    this.ui.toast(`抄底 ${shock.coin}。价格弹回去以后，这笔就值钱了`);
+    this.noteTrack('crash', 1);
+    this.endShock('bought');
+  }
+
+  shoutPump() {
+    if (!this.shock || this.shock.done) return;
+    this.shock.done = true;
+    this.shock.life = Math.max(this.shock.life, 10);
+    this.bal.ORNG += 900;
+    this.usd += 200;
+    this.shocks.pumps += 1;
+    this.rep += 8;
+    this.walletSig = '';
+    setShockMult('ORNG', 2.5);
+    this.pushPrices();
+    this.addWanted(1, '街头喊单');
+    this.audio.success();
+    this.ui.toast('喊单成功，大橙子币又冲了一截。监管看了你一眼');
+    this.noteTrack('pump', 1);
+  }
+
+  tryClaimDrop(forced) {
+    const shock = this.shock;
+    if (!shock || shock.kind !== 'drop' || shock.taken) return false;
+    const here = this.focus();
+    if (dist2(here.x, here.z, shock.x, shock.z) > 12) return false;
+    if (!forced && this.downTimer > 0) return false;
+    shock.taken = true;
+    this.usd += 720;
+    this.bal.ORNG += 400;
+    this.shocks.claimed += 1;
+    this.rep += 6;
+    this.walletSig = '';
+    this.audio.coin();
+    this.ui.toast('空投到手：+$720，ORNG +400');
+    this.noteTrack('drop', 1);
+    this.endShock('claimed');
+    return true;
+  }
+
+  loseDrop() {
+    const shock = this.shock;
+    if (!shock || shock.kind !== 'drop' || shock.taken) return;
+    const here = this.focus();
+    if (dist2(here.x, here.z, shock.x, shock.z) <= 12) {
+      this.tryClaimDrop(true);
+      return;
+    }
+    shock.taken = true;
+    this.audio.fail();
+    this.ui.toast('空投被人抢先拿走了');
+    this.endShock('stolen');
+  }
+
+  spawnDropRunner(spot) {
+    const runner = this.makeNpc('male');
+    tintActor(runner.actor, { cloth: '#ffe14a', pants: '#241018', hair: '#1b120d' });
+    let x = spot.x + 22;
+    let z = spot.z + 26;
+    if (inWater(x, z)) {
+      x = spot.x - 26;
+      z = spot.z + 10;
+    }
+    runner.x = x;
+    runner.z = z;
+    runner.shockRunner = true;
+    runner.hp = 48;
+    runner.team = 'civ';
+    runner.alive = true;
+    runner.actor.model.position.set(x, 0, z);
+    runner.actor.play('Run');
+    this.npcs.push(runner);
+    this.shock.runner = runner;
+  }
+
+  stepShockRunner(npc, dt) {
+    const shock = this.shock;
+    if (!shock || shock.kind !== 'drop' || shock.taken) {
+      npc.shockRunner = false;
+      return;
+    }
+    if (!npc.alive) {
+      npc.actor.model.visible = true;
+      return;
+    }
+    const toward = Math.atan2(shock.x - npc.x, shock.z - npc.z);
+    this.stepNpc(npc, toward, 5.5, dt);
+    npc.actor.model.visible = true;
+    locomotion(npc.actor, npc.speed, npc.animLock);
+    if (Math.hypot(npc.x - shock.x, npc.z - shock.z) < 1.7) this.loseDrop();
+  }
+
+  endShock(why) {
+    const shock = this.shock;
+    if (!shock) return;
+    clearShockMults();
+    if (this.crate) this.crate.visible = false;
+    if (shock.runner) shock.runner.shockRunner = false;
+    this.shock = null;
+    this.objectiveSig = '';
+    if (why === 'expire') {
+      if (shock.kind === 'drop') this.ui.toast('空投超时，箱子锁上了');
+      else if (shock.kind === 'crash') this.ui.toast('闪崩结束，价格弹回去了');
+      else this.ui.toast('这场拉盘凉了');
+    }
+    if (why !== 'quiet') this.pushPrices();
+  }
+
   showMarker(target, text) {
     if (target) {
       this.beacon.visible = true;
@@ -3522,6 +3827,12 @@ export class Game {
         ctx.fillRect(toX(gate.x) - 2, toY(gate.z) - 2, 4, 4);
       }
     }
+    if (this.shock) {
+      ctx.fillStyle = this.shock.kind === 'crash' ? '#ff5d7a' : this.shock.kind === 'pump' ? '#ff4fa3' : '#3df0ff';
+      ctx.beginPath();
+      ctx.arc(toX(this.shock.x), toY(this.shock.z), 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
     if (this.beacon?.visible) {
       ctx.fillStyle = '#ff8a1e';
       ctx.beginPath();
@@ -3584,6 +3895,9 @@ export class Game {
     this.race = null;
     this.raceBest = {};
     this.turf = readTurf(null);
+    this.shocks = readShocks(null);
+    this.endShock('quiet');
+    this.shockClock = 22;
     this.war = null;
     this.raid = null;
     this.raidClock = 110;

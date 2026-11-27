@@ -107,7 +107,7 @@ export function createUI(root) {
           <li>直升机：Shift 或空格上升，Ctrl 下降，W/S 前后，A/D 转向</li>
           <li>船只能在海里和港口像样地开</li>
           <li>鼠标左键攻击。1 拳头，2 手枪，3 步枪，R 换弹</li>
-          <li>E：交易所、任务、车行、房产，也可以和故事人物说话。地图上的粉标是地下赛，按 E 或互动键发车。色块是帮派地盘，走到敌旗按 E 宣战。M 任务，J 或「日」打开每日、成就和地盘，H 帮助，Esc 暂停，T 挥手</li>
+          <li>E：交易所、任务、车行、房产，也可以和故事人物说话。地图上的粉标是地下赛，按 E 或互动键发车。色块是帮派地盘，走到敌旗按 E 宣战。城里会突然闪崩、空投或拉盘。M 任务，J 或「日」打开每日、成就和地盘，H 帮助，Esc 暂停，T 挥手</li>
           <li>倒下会在橙子医院醒来。手机：左下摇杆移动，右半屏拖动环顾，右侧按钮开火。横屏更顺手</li>
         </ul>
         <p class="fine">打开菜单时城市时间会暂停。游客进度留在本地。登录后，净值、声望和故事章节会同步到排行榜。每日三单按新加坡时间零点刷新，成就记在同一份存档里。</p>
@@ -320,13 +320,16 @@ export function createUI(root) {
       $('#headline').textContent = HEADLINES[headlineIdx % HEADLINES.length];
       headlineIdx += 1;
     },
-    setTicker(prices, source, hot) {
+    setTicker(prices, source, hot, shock) {
       const bits = COINS.map((coin) => {
         const price = prices[coin.id];
-        const cls = coin.id === 'ORNG' && hot ? 'hot' : '';
+        let cls = '';
+        if (shock?.kind === 'crash' && coin.id === shock.coin) cls = 'crash';
+        else if (coin.id === 'ORNG' && (hot || shock?.kind === 'pump')) cls = 'hot';
         return `<span class="${cls}">${coin.tick} $${fmtNum(price, coin.priceDec)}</span>`;
       }).join('   ·   ');
-      const text = `${bits}    ·    行情 ${source}${hot ? '    ·    大橙子币拉盘中' : ''}`;
+      const tag = shock?.label ? `    ·    ${shock.label}` : (hot ? '    ·    大橙子币拉盘中' : '');
+      const text = `${bits}    ·    行情 ${source}${tag}`;
       $('#ticker-track').innerHTML = `${text}　　${text}`;
     },
     setWallet(model) {

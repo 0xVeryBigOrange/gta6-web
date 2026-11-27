@@ -7,6 +7,18 @@ const state = {
   updatedAt: 0,
 };
 
+const shock = { BTC: 1, ETH: 1, SOL: 1, DOGE: 1, ORNG: 1 };
+
+export function setShockMult(id, mult) {
+  if (!(id in shock)) return;
+  const n = Number(mult);
+  shock[id] = Number.isFinite(n) ? Math.max(0.05, Math.min(8, n)) : 1;
+}
+
+export function clearShockMults() {
+  for (const key of Object.keys(shock)) shock[key] = 1;
+}
+
 function drift(rng) {
   const next = { ...state.live };
   for (const key of Object.keys(next)) {
@@ -61,11 +73,11 @@ async function fromCryptoCompare() {
 
 export function getPrices() {
   return {
-    BTC: state.live.BTC,
-    ETH: state.live.ETH,
-    SOL: state.live.SOL,
-    DOGE: state.live.DOGE,
-    ORNG: state.live.ORNG * state.orngMult,
+    BTC: state.live.BTC * shock.BTC,
+    ETH: state.live.ETH * shock.ETH,
+    SOL: state.live.SOL * shock.SOL,
+    DOGE: state.live.DOGE * shock.DOGE,
+    ORNG: state.live.ORNG * state.orngMult * shock.ORNG,
   };
 }
 
